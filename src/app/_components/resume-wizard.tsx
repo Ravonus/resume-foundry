@@ -9,6 +9,7 @@ import {
   type ResumeDraft,
   type ScrapedProfile,
 } from "~/lib/resume/types";
+import { parseSummaryBlocks } from "~/lib/resume/summary-format";
 
 import { ThemeToggle } from "./theme-toggle";
 
@@ -70,6 +71,27 @@ type ResumeTheme = {
   accentSoft: string;
   accentInk: string;
 };
+
+type ExperienceAiSuggestion = {
+  id: string;
+  createdAt: number;
+  prompt: string;
+  summary: string;
+  highlights: string[];
+  source?: "auto" | "prompt";
+};
+
+type ExperienceAiHistory = Record<string, ExperienceAiSuggestion[]>;
+
+type SummaryAiSuggestion = {
+  id: string;
+  createdAt: number;
+  prompt: string;
+  summary: string;
+  source?: "auto" | "prompt";
+};
+
+type SummaryAiHistory = SummaryAiSuggestion[];
 
 const DEFAULT_RESUME_THEME: ResumeTheme = {
   accent: "#1f5c7a",
@@ -175,6 +197,239 @@ const baseSteps: Step[] = [
 const normalizeSkill = (value: string) => value.trim().toLowerCase();
 
 const createItemId = () => Math.random().toString(36).slice(2, 10);
+
+const AUTO_REWRITE_TAG = "Auto rewrite v3";
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const formatSummaryHtml = (value: string) => {
+  const blocks = parseSummaryBlocks(value);
+  if (blocks.length === 0) return "";
+  return blocks
+    .map((block) => {
+      if (block.type === "list") {
+        const items = block.lines
+          .map((line) => `<li>${escapeHtml(line)}</li>`)
+          .join("");
+        return `<ul>${items}</ul>`;
+      }
+      const content = block.lines
+        .map((line) => escapeHtml(line))
+        .join("<br/>");
+      return `<p>${content}</p>`;
+    })
+    .join("");
+};
+
+const renderSummaryBlocks = (
+  text: string,
+  options: {
+    paragraphClassName?: string;
+    listClassName?: string;
+    itemClassName?: string;
+  } = {},
+) => {
+  const blocks = parseSummaryBlocks(text);
+  if (blocks.length === 0) return null;
+  const {
+    paragraphClassName = "whitespace-pre-line",
+    listClassName = "list-disc space-y-1 pl-4",
+    itemClassName = "",
+  } = options;
+
+  return blocks.map((block, index) => {
+    if (block.type === "list") {
+      return (
+        <ul key={`summary-list-${index}`} className={listClassName}>
+          {block.lines.map((line, lineIndex) => (
+            <li
+              key={`summary-item-${index}-${lineIndex}`}
+              className={itemClassName}
+            >
+              {line}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+
+    return (
+      <p key={`summary-para-${index}`} className={paragraphClassName}>
+        {block.lines.join("\n")}
+      </p>
+    );
+  });
+};
+
+const normalizeSummaryText = (value?: string) => (value ?? "").trim();
+
+const normalizeHighlights = (items?: string[]) =>
+  (items ?? []).map((item) => item.trim()).filter(Boolean);
+
+const areArraysEqual = (left: string[], right: string[]) =>
+  left.length === right.length &&
+  left.every((item, index) => item === right[index]);
+
+const hashText = (value: string) => {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+};
+
+const buildScrapedKey = (scraped: ScrapedProfile) => {
+  try {
+    return hashText(JSON.stringify({ tag: AUTO_REWRITE_TAG, scraped }));
+  } catch {
+    return `scrape-${Date.now()}`;
+  }
+};
+
+const hasSummaryContent = (draft: ResumeDraft) =>
+  Boolean(normalizeSummaryText(draft.profile.summary)) ||
+  draft.experiences.some(
+    (exp) =>
+      Boolean(normalizeSummaryText(exp.summary)) ||
+      normalizeHighlights(exp.highlights).length > 0,
+  );
+
+const applyAutoRewrite = (
+  current: ResumeDraft,
+  baseline: ResumeDraft,
+  polished: ResumeDraft,
+): ResumeDraft => {
+  const baselineSummary = normalizeSummaryText(baseline.profile.summary);
+  const currentSummary = normalizeSummaryText(current.profile.summary);
+  const polishedSummary = normalizeSummaryText(polished.profile.summary);
+  const nextProfile =
+    currentSummary === baselineSummary &&
+    polishedSummary &&
+    polishedSummary !== currentSummary
+      ? { ...current.profile, summary: polishedSummary }
+      : current.profile;
+
+  const nextExperiences = current.experiences.map((exp) => {
+    const baselineExp = baseline.experiences.find((item) => item.id === exp.id);
+    const polishedExp = polished.experiences.find((item) => item.id === exp.id);
+    if (!baselineExp || !polishedExp) return exp;
+
+    const baselineExpSummary = normalizeSummaryText(baselineExp.summary);
+    const currentExpSummary = normalizeSummaryText(exp.summary);
+    const polishedExpSummary = normalizeSummaryText(polishedExp.summary);
+
+    const baselineHighlights = normalizeHighlights(baselineExp.highlights);
+    const currentHighlights = normalizeHighlights(exp.highlights);
+    const polishedHighlights = normalizeHighlights(polishedExp.highlights);
+
+    const summary =
+      currentExpSummary === baselineExpSummary &&
+      polishedExpSummary &&
+      polishedExpSummary !== currentExpSummary
+        ? polishedExpSummary
+        : exp.summary;
+
+    const highlights =
+      areArraysEqual(currentHighlights, baselineHighlights) &&
+      polishedHighlights.length > 0 &&
+      !areArraysEqual(polishedHighlights, currentHighlights)
+        ? polishedHighlights
+        : exp.highlights ?? [];
+
+    return {
+      ...exp,
+      summary,
+      highlights,
+    };
+  });
+
+  return { ...current, profile: nextProfile, experiences: nextExperiences };
+};
+
+const seedAutoRewriteHistory = (
+  currentHistory: ExperienceAiHistory,
+  baseline: ResumeDraft,
+  polished: ResumeDraft,
+): ExperienceAiHistory => {
+  const next = { ...currentHistory };
+  const createdAt = Date.now();
+
+  for (const polishedExp of polished.experiences) {
+    const baselineExp = baseline.experiences.find(
+      (item) => item.id === polishedExp.id,
+    );
+    if (!baselineExp) continue;
+
+    const baselineSummary = normalizeSummaryText(baselineExp.summary);
+    const baselineHighlights = normalizeHighlights(baselineExp.highlights);
+    const polishedSummary = normalizeSummaryText(polishedExp.summary);
+    const polishedHighlights = normalizeHighlights(polishedExp.highlights);
+
+    const hasContent =
+      Boolean(polishedSummary) || polishedHighlights.length > 0;
+    if (!hasContent) continue;
+    const hasChange =
+      (polishedSummary && polishedSummary !== baselineSummary) ||
+      !areArraysEqual(polishedHighlights, baselineHighlights);
+    if (!hasChange) continue;
+
+    const existing = next[polishedExp.id] ?? [];
+    if (
+      existing.some(
+        (entry) => entry.source === "auto" && entry.prompt === AUTO_REWRITE_TAG,
+      )
+    ) {
+      continue;
+    }
+
+    const entry: ExperienceAiSuggestion = {
+      id: createItemId(),
+      createdAt,
+      prompt: AUTO_REWRITE_TAG,
+      summary: polishedSummary,
+      highlights: polishedHighlights,
+      source: "auto",
+    };
+
+    next[polishedExp.id] = [entry, ...existing].slice(0, 10);
+  }
+
+  return next;
+};
+
+const seedAutoRewriteSummary = (
+  currentHistory: SummaryAiHistory,
+  baseline: ResumeDraft,
+  polished: ResumeDraft,
+): SummaryAiHistory => {
+  const baselineSummary = normalizeSummaryText(baseline.profile.summary);
+  const polishedSummary = normalizeSummaryText(polished.profile.summary);
+  if (!polishedSummary || polishedSummary === baselineSummary) {
+    return currentHistory;
+  }
+  if (
+    currentHistory.some(
+      (entry) => entry.source === "auto" && entry.prompt === AUTO_REWRITE_TAG,
+    )
+  ) {
+    return currentHistory;
+  }
+  const entry: SummaryAiSuggestion = {
+    id: createItemId(),
+    createdAt: Date.now(),
+    prompt: AUTO_REWRITE_TAG,
+    summary: polishedSummary,
+    source: "auto",
+  };
+  return [entry, ...currentHistory].slice(0, 10);
+};
 
 const createBlankExperience = () => ({
   id: createItemId(),
@@ -363,11 +618,29 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
   >("idle");
   const [exportError, setExportError] = useState("");
   const [resumeTheme, setResumeTheme] = useState<ResumeTheme | null>(null);
-  const [polishPrompt, setPolishPrompt] = useState("");
-  const [polishState, setPolishState] = useState<
-    "idle" | "loading" | "success" | "error"
+  const [summaryAiOpen, setSummaryAiOpen] = useState(false);
+  const [summaryAiVisible, setSummaryAiVisible] = useState(false);
+  const [summaryAiPrompt, setSummaryAiPrompt] = useState("");
+  const [summaryAiState, setSummaryAiState] = useState<
+    "idle" | "loading" | "error"
   >("idle");
-  const [polishError, setPolishError] = useState("");
+  const [summaryAiError, setSummaryAiError] = useState("");
+  const [summaryAiHistory, setSummaryAiHistory] =
+    useState<SummaryAiHistory>([]);
+  const [autoRewriteKey, setAutoRewriteKey] = useState<string | null>(null);
+  const [experienceAiOpen, setExperienceAiOpen] = useState(false);
+  const [experienceAiVisible, setExperienceAiVisible] = useState(false);
+  const [experienceAiId, setExperienceAiId] = useState<string | null>(null);
+  const [experienceAiPrompt, setExperienceAiPrompt] = useState("");
+  const [experienceAiState, setExperienceAiState] = useState<
+    "idle" | "loading" | "error"
+  >("idle");
+  const [experienceAiError, setExperienceAiError] = useState("");
+  const [experienceAiHistory, setExperienceAiHistory] =
+    useState<ExperienceAiHistory>({});
+  const summaryAiCloseTimeoutRef = useRef<number | null>(null);
+  const experienceAiCloseTimeoutRef = useRef<number | null>(null);
+  const autoRewriteInFlightRef = useRef<string | null>(null);
 
   useEffect(() => {
     const stored =
@@ -409,6 +682,9 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
         hasStarted?: boolean;
         importMode?: "linkedin" | "resume";
         linkedinUrl?: string;
+        experienceAiHistory?: ExperienceAiHistory;
+        summaryAiHistory?: SummaryAiHistory;
+        autoRewriteKey?: string | null;
       };
 
       if (parsed.draft) setDraft(normalizeDraft(parsed.draft));
@@ -440,6 +716,15 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
         setImportMode(parsed.importMode);
       }
       if (parsed.linkedinUrl) setLinkedinUrl(parsed.linkedinUrl);
+      if (parsed.experienceAiHistory) {
+        setExperienceAiHistory(parsed.experienceAiHistory);
+      }
+      if (parsed.summaryAiHistory) {
+        setSummaryAiHistory(parsed.summaryAiHistory);
+      }
+      if (typeof parsed.autoRewriteKey === "string") {
+        setAutoRewriteKey(parsed.autoRewriteKey);
+      }
     } catch {
       // ignore storage parse errors
     } finally {
@@ -460,6 +745,9 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
       hasStarted,
       importMode,
       linkedinUrl,
+      experienceAiHistory,
+      summaryAiHistory,
+      autoRewriteKey,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }, [
@@ -475,19 +763,186 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
     hasStarted,
     importMode,
     linkedinUrl,
+    experienceAiHistory,
+    summaryAiHistory,
+    autoRewriteKey,
   ]);
 
   useEffect(() => {
-    if (scraped) {
-      setDraft((current) => applyScrapedProfile(current, scraped));
+    if (!scraped) return;
+
+    const baseline = normalizeDraft(
+      applyScrapedProfile(createEmptyDraft(), scraped),
+    );
+
+    setDraft((current) => applyScrapedProfile(current, scraped));
+
+    if (!edenEnabled) return;
+
+    const scrapedKey = buildScrapedKey(scraped);
+    if (
+      autoRewriteKey === scrapedKey ||
+      autoRewriteInFlightRef.current === scrapedKey
+    ) {
+      return;
     }
-  }, [scraped]);
+
+    if (!hasSummaryContent(baseline)) {
+      setAutoRewriteKey(scrapedKey);
+      return;
+    }
+
+    let active = true;
+    const runAutoRewrite = async () => {
+      autoRewriteInFlightRef.current = scrapedKey;
+      try {
+        const response = await fetch("/api/ai/polish", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ draft: baseline, scraped }),
+        });
+
+        if (!active) return;
+
+        if (!response.ok) {
+          setAutoRewriteKey(scrapedKey);
+          return;
+        }
+
+        const data = (await response.json()) as { draft?: ResumeDraft };
+        if (!data.draft) {
+          setAutoRewriteKey(scrapedKey);
+          return;
+        }
+
+        let polished = normalizeDraft(data.draft);
+        const baselineSummary = normalizeSummaryText(baseline.profile.summary);
+        const polishedSummary = normalizeSummaryText(polished.profile.summary);
+
+        if (baselineSummary && polishedSummary === baselineSummary) {
+          try {
+            const summaryResponse = await fetch("/api/ai/summary", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                summary: baselineSummary,
+                profile: baseline.profile,
+                prompt:
+                  "Rewrite with fresh wording and sentence structure. Do not reuse any sentence verbatim.",
+              }),
+            });
+            if (summaryResponse.ok) {
+              const summaryData = (await summaryResponse.json()) as {
+                summary?: string;
+              };
+              const forcedSummary = normalizeSummaryText(summaryData.summary);
+              if (forcedSummary && forcedSummary !== baselineSummary) {
+                polished = {
+                  ...polished,
+                  profile: { ...polished.profile, summary: forcedSummary },
+                };
+              }
+            }
+          } catch {
+            // ignore fallback failures
+          }
+        }
+
+        if (!active) return;
+        setDraft((current) => applyAutoRewrite(current, baseline, polished));
+        setExperienceAiHistory((current) =>
+          seedAutoRewriteHistory(current, baseline, polished),
+        );
+        setSummaryAiHistory((current) =>
+          seedAutoRewriteSummary(current, baseline, polished),
+        );
+        setAutoRewriteKey(scrapedKey);
+      } catch {
+        if (!active) return;
+        setAutoRewriteKey(scrapedKey);
+      } finally {
+        if (autoRewriteInFlightRef.current === scrapedKey) {
+          autoRewriteInFlightRef.current = null;
+        }
+      }
+    };
+
+    void runAutoRewrite();
+    return () => {
+      active = false;
+    };
+  }, [
+    scraped,
+    edenEnabled,
+    autoRewriteKey,
+  ]);
 
   useEffect(() => {
     if (hasStarted) {
       document.getElementById("questions")?.scrollIntoView({ behavior: "auto" });
     }
   }, [hasStarted]);
+
+  useEffect(() => {
+    if (!summaryAiVisible) return;
+    const handleKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSummaryAiOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [summaryAiVisible]);
+
+  useEffect(() => {
+    if (!summaryAiVisible || summaryAiOpen) return;
+    if (summaryAiCloseTimeoutRef.current) {
+      window.clearTimeout(summaryAiCloseTimeoutRef.current);
+    }
+    summaryAiCloseTimeoutRef.current = window.setTimeout(() => {
+      setSummaryAiVisible(false);
+      setSummaryAiPrompt("");
+      setSummaryAiError("");
+      setSummaryAiState("idle");
+      summaryAiCloseTimeoutRef.current = null;
+    }, 220);
+    return () => {
+      if (summaryAiCloseTimeoutRef.current) {
+        window.clearTimeout(summaryAiCloseTimeoutRef.current);
+      }
+    };
+  }, [summaryAiOpen, summaryAiVisible]);
+
+  useEffect(() => {
+    if (!experienceAiVisible) return;
+    const handleKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setExperienceAiOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [experienceAiVisible]);
+
+  useEffect(() => {
+    if (!experienceAiVisible || experienceAiOpen) return;
+    if (experienceAiCloseTimeoutRef.current) {
+      window.clearTimeout(experienceAiCloseTimeoutRef.current);
+    }
+    experienceAiCloseTimeoutRef.current = window.setTimeout(() => {
+      setExperienceAiVisible(false);
+      setExperienceAiId(null);
+      setExperienceAiPrompt("");
+      setExperienceAiError("");
+      setExperienceAiState("idle");
+      experienceAiCloseTimeoutRef.current = null;
+    }, 220);
+    return () => {
+      if (experienceAiCloseTimeoutRef.current) {
+        window.clearTimeout(experienceAiCloseTimeoutRef.current);
+      }
+    };
+  }, [experienceAiOpen, experienceAiVisible]);
 
   useEffect(() => {
     if (!scrapeJobId) return;
@@ -728,6 +1183,29 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
     setExperienceSearch("");
     setEducationSearch("");
     setLinkSearch("");
+    setExperienceAiOpen(false);
+    setExperienceAiVisible(false);
+    setExperienceAiId(null);
+    setExperienceAiPrompt("");
+    setExperienceAiState("idle");
+    setExperienceAiError("");
+    setExperienceAiHistory({});
+    setSummaryAiOpen(false);
+    setSummaryAiVisible(false);
+    setSummaryAiPrompt("");
+    setSummaryAiState("idle");
+    setSummaryAiError("");
+    setSummaryAiHistory([]);
+    setAutoRewriteKey(null);
+    if (experienceAiCloseTimeoutRef.current) {
+      window.clearTimeout(experienceAiCloseTimeoutRef.current);
+      experienceAiCloseTimeoutRef.current = null;
+    }
+    if (summaryAiCloseTimeoutRef.current) {
+      window.clearTimeout(summaryAiCloseTimeoutRef.current);
+      summaryAiCloseTimeoutRef.current = null;
+    }
+    autoRewriteInFlightRef.current = null;
   };
 
   const handlePasteImport = async () => {
@@ -950,7 +1428,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
         : "";
 
     const summary = cleaned.profile.summary?.trim()
-      ? `<p>${cleaned.profile.summary.trim()}</p>`
+      ? formatSummaryHtml(cleaned.profile.summary.trim())
       : "";
 
     const skills = cleaned.skills.length
@@ -969,7 +1447,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
           .filter(Boolean);
         const meta = metaParts.length ? `<div class="meta">${metaParts.join(" | ")}</div>` : "";
         const summaryText = exp.summary?.trim()
-          ? `<p>${exp.summary.trim()}</p>`
+          ? formatSummaryHtml(exp.summary.trim())
           : "";
         const highlights = (exp.highlights ?? [])
           .filter((value) => value.trim())
@@ -1105,48 +1583,6 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
     }
   };
 
-  const handlePolish = async () => {
-    if (polishState === "loading") return;
-    setPolishState("loading");
-    setPolishError("");
-
-    const cleaned = cleanDraft(normalizeDraft(draft));
-
-    try {
-      const response = await fetch("/api/ai/polish", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          draft: cleaned,
-          scraped,
-          prompt: polishPrompt.trim() || undefined,
-        }),
-      });
-
-      if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        setPolishState("error");
-        setPolishError(data?.error ?? "We could not polish your resume.");
-        return;
-      }
-
-      const data = (await response.json()) as { draft: ResumeDraft };
-      if (data?.draft) {
-        setDraft(data.draft);
-        setPolishState("success");
-        return;
-      }
-
-      setPolishState("error");
-      setPolishError("We could not polish your resume.");
-    } catch (error) {
-      setPolishState("error");
-      setPolishError("We could not polish your resume.");
-    }
-  };
-
   const updateProfileField = (
     field: keyof ResumeDraft["profile"],
     value: string,
@@ -1155,6 +1591,35 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
       ...current,
       profile: { ...current.profile, [field]: value },
     }));
+  };
+
+  const restoreProfileSummary = () => {
+    if (!scraped || typeof scraped.profile?.summary !== "string") return;
+    updateProfileField("summary", scraped.profile.summary ?? "");
+  };
+
+  const openSummaryAi = () => {
+    if (summaryAiCloseTimeoutRef.current) {
+      window.clearTimeout(summaryAiCloseTimeoutRef.current);
+      summaryAiCloseTimeoutRef.current = null;
+    }
+    const latestPrompt =
+      summaryAiHistory.find((entry) => entry.source !== "auto")?.prompt ?? "";
+    setSummaryAiPrompt(latestPrompt);
+    setSummaryAiError("");
+    setSummaryAiState("idle");
+    setSummaryAiVisible(true);
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        setSummaryAiOpen(true);
+      });
+    } else {
+      setSummaryAiOpen(true);
+    }
+  };
+
+  const closeSummaryAi = () => {
+    setSummaryAiOpen(false);
   };
 
   const updateExperience = (
@@ -1167,6 +1632,197 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
       experiences[index] = { ...experiences[index], [field]: value };
       return { ...current, experiences };
     });
+  };
+
+  const restoreExperienceFromScraped = (experienceId: string) => {
+    const original = scraped?.experiences?.find(
+      (item) => item.id === experienceId,
+    );
+    if (!original) return;
+    setDraft((current) => ({
+      ...current,
+      experiences: current.experiences.map((exp) =>
+        exp.id === experienceId
+          ? {
+              ...exp,
+              summary: original.summary ?? "",
+              highlights: original.highlights ?? [],
+            }
+          : exp,
+      ),
+    }));
+  };
+
+
+  const openExperienceAi = (experienceId: string) => {
+    if (experienceAiCloseTimeoutRef.current) {
+      window.clearTimeout(experienceAiCloseTimeoutRef.current);
+      experienceAiCloseTimeoutRef.current = null;
+    }
+    const history = experienceAiHistory[experienceId] ?? [];
+    const latestPrompt =
+      history.find((entry) => entry.source !== "auto")?.prompt ?? "";
+    setExperienceAiId(experienceId);
+    setExperienceAiPrompt(latestPrompt);
+    setExperienceAiError("");
+    setExperienceAiState("idle");
+    setExperienceAiVisible(true);
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        setExperienceAiOpen(true);
+      });
+    } else {
+      setExperienceAiOpen(true);
+    }
+  };
+
+  const closeExperienceAi = () => {
+    setExperienceAiOpen(false);
+  };
+
+  const applyExperienceSuggestion = (
+    experienceId: string,
+    suggestion: ExperienceAiSuggestion,
+  ) => {
+    setDraft((current) => {
+      const experiences = current.experiences.map((exp) => {
+        if (exp.id !== experienceId) return exp;
+        const nextSummary = suggestion.summary?.trim() ?? "";
+        const nextHighlights = suggestion.highlights
+          .map((item) => item.trim())
+          .filter(Boolean);
+        return {
+          ...exp,
+          summary: nextSummary || exp.summary,
+          highlights: nextHighlights.length > 0 ? nextHighlights : exp.highlights,
+        };
+      });
+      return { ...current, experiences };
+    });
+  };
+
+  const applySummarySuggestion = (suggestion: SummaryAiSuggestion) => {
+    updateProfileField("summary", suggestion.summary);
+  };
+
+  const handleSummaryAiGenerate = async () => {
+    if (summaryAiState === "loading") return;
+    if (!edenEnabled) {
+      setSummaryAiError("AI is unavailable right now.");
+      setSummaryAiState("error");
+      return;
+    }
+
+    setSummaryAiState("loading");
+    setSummaryAiError("");
+
+    try {
+      const response = await fetch("/api/ai/summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          summary: draft.profile.summary ?? "",
+          profile: {
+            headline: draft.profile.headline,
+            targetRole: draft.profile.targetRole,
+            jobField: draft.profile.jobField,
+            jobType: draft.profile.jobType,
+          },
+          prompt: summaryAiPrompt.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setSummaryAiState("error");
+        setSummaryAiError(data?.error ?? "We could not rewrite the summary.");
+        return;
+      }
+
+      const data = (await response.json()) as {
+        summary?: string;
+      };
+      const entry: SummaryAiSuggestion = {
+        id: createItemId(),
+        createdAt: Date.now(),
+        prompt: summaryAiPrompt.trim(),
+        summary: data.summary?.trim() ?? "",
+        source: "prompt",
+      };
+      setSummaryAiHistory((current) => [entry, ...current].slice(0, 10));
+      setSummaryAiState("idle");
+    } catch (error) {
+      setSummaryAiState("error");
+      setSummaryAiError("We could not rewrite the summary.");
+    }
+  };
+
+  const handleExperienceAiGenerate = async () => {
+    if (experienceAiState === "loading") return;
+    if (!edenEnabled) {
+      setExperienceAiError("AI is unavailable right now.");
+      setExperienceAiState("error");
+      return;
+    }
+    if (!experienceAiId) return;
+    const experience = draft.experiences.find(
+      (item) => item.id === experienceAiId,
+    );
+    if (!experience) return;
+
+    setExperienceAiState("loading");
+    setExperienceAiError("");
+
+    try {
+      const response = await fetch("/api/ai/experience", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          experience,
+          profile: {
+            headline: draft.profile.headline,
+            targetRole: draft.profile.targetRole,
+            jobField: draft.profile.jobField,
+            jobType: draft.profile.jobType,
+          },
+          prompt: experienceAiPrompt.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setExperienceAiState("error");
+        setExperienceAiError(data?.error ?? "We could not rewrite that role.");
+        return;
+      }
+
+      const data = (await response.json()) as {
+        suggestion?: { summary?: string; highlights?: string[] };
+      };
+      const suggestion = data?.suggestion ?? {};
+      const entry: ExperienceAiSuggestion = {
+        id: createItemId(),
+        createdAt: Date.now(),
+        prompt: experienceAiPrompt.trim(),
+        summary: suggestion.summary?.trim() ?? "",
+        highlights: (suggestion.highlights ?? []).filter(Boolean),
+        source: "prompt",
+      };
+
+      setExperienceAiHistory((current) => {
+        const existing = current[experienceAiId] ?? [];
+        const next = [entry, ...existing].slice(0, 10);
+        return { ...current, [experienceAiId]: next };
+      });
+      setExperienceAiState("idle");
+    } catch (error) {
+      setExperienceAiState("error");
+      setExperienceAiError("We could not rewrite that role.");
+    }
   };
 
   const updateEducation = (
@@ -1508,6 +2164,18 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
     (item) => item.id === activeLinkId,
   );
   const activeLink = activeLinkIndex >= 0 ? draft.links[activeLinkIndex] : null;
+  const experienceAiActive = experienceAiId
+    ? draft.experiences.find((item) => item.id === experienceAiId) ?? null
+    : null;
+  const experienceAiOriginal =
+    experienceAiId && scraped?.experiences
+      ? scraped.experiences.find((item) => item.id === experienceAiId) ?? null
+      : null;
+  const experienceAiEntries = experienceAiId
+    ? experienceAiHistory[experienceAiId] ?? []
+    : [];
+  const summaryAiEntries = summaryAiHistory;
+  const summaryAiOriginal = scraped?.profile?.summary ?? "";
 
   const experienceSuggestions = useMemo(() => {
     const query = experienceSearch.trim().toLowerCase();
@@ -1949,14 +2617,27 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
                     ) : null}
 
                     {current.kind === "textarea" ? (
-                      <textarea
-                        value={draft.profile[current.field]}
-                        onChange={(event) =>
-                          updateProfileField(current.field, event.target.value)
-                        }
-                        placeholder={current.placeholder}
-                        className="input-base w-full min-h-[140px] resize-none"
-                      />
+                      <div className="space-y-2">
+                        <textarea
+                          value={draft.profile[current.field]}
+                          onChange={(event) =>
+                            updateProfileField(current.field, event.target.value)
+                          }
+                          placeholder={current.placeholder}
+                          className="input-base w-full min-h-[140px] resize-none"
+                        />
+                        {current.field === "summary" && (
+                          <div className="flex items-center justify-end text-xs text-[var(--muted)]">
+                            <button
+                              type="button"
+                              onClick={openSummaryAi}
+                              className="rounded-full border border-[var(--border)] px-3 py-1 text-[11px] text-[var(--text)] hover:bg-[var(--surface-muted)]"
+                            >
+                              AI rewrite
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     ) : null}
 
                     {current.kind === "skills" ? (
@@ -2113,22 +2794,32 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
                                   event.target.value,
                                 )
                               }
-                              placeholder="Summarize what you did. We draft the bullet points."
+                              placeholder="Summarize what you did."
                               className="input-base w-full min-h-[110px] resize-none"
                             />
-                            <div className="flex items-center justify-between text-xs text-[var(--muted)]">
-                              <span>AI will turn this into bullets.</span>
-                              {!isExperienceEmpty(activeExperience) && (
+                            <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-[var(--muted)]">
+                              <div className="flex items-center gap-2">
                                 <button
                                   type="button"
                                   onClick={() =>
-                                    removeExperience(activeExperience.id)
+                                    openExperienceAi(activeExperience.id)
                                   }
-                                  className="text-xs text-[var(--muted)] hover:text-[var(--text)]"
+                                  className="rounded-full border border-[var(--border)] px-3 py-1 text-[11px] text-[var(--text)] hover:bg-[var(--surface-muted)]"
                                 >
-                                  Remove
+                                  AI rewrite
                                 </button>
-                              )}
+                                {!isExperienceEmpty(activeExperience) && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      removeExperience(activeExperience.id)
+                                    }
+                                    className="text-xs text-[var(--muted)] hover:text-[var(--text)]"
+                                  >
+                                    Remove
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           </div>
                         ) : (
@@ -2520,42 +3211,6 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
                               ))}
                           </div>
                         </div>
-                        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-                          <div className="space-y-2">
-                            <p className="text-sm font-semibold">
-                              Polish with AI
-                            </p>
-                            <p className="text-xs text-[var(--muted)]">
-                              Optional. Rewrite summary and highlights with a
-                              stronger story.
-                            </p>
-                          </div>
-                          <div className="mt-3 space-y-3">
-                            <textarea
-                              value={polishPrompt}
-                              onChange={(event) =>
-                                setPolishPrompt(event.target.value)
-                              }
-                              placeholder="Tone or focus (e.g. executive, emphasize automation, crisp bullets)"
-                              className="input-base w-full min-h-[90px] resize-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={handlePolish}
-                              className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
-                              disabled={polishState === "loading"}
-                            >
-                              {polishState === "loading"
-                                ? "Regenerating..."
-                                : "Regenerate with AI"}
-                            </button>
-                            {polishError && (
-                              <p className="text-xs text-red-500">
-                                {polishError}
-                              </p>
-                            )}
-                          </div>
-                        </div>
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
@@ -2637,6 +3292,368 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
               </div>
             </div>
           </section>
+        )}
+
+        {summaryAiVisible && (
+          <div
+            className={`fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8 transition-opacity duration-200 ${
+              summaryAiOpen ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+            onClick={closeSummaryAi}
+          >
+            <div
+              className={`w-full max-w-3xl max-h-[85vh] overflow-y-auto rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl transition-all duration-200 ease-out ${
+                summaryAiOpen
+                  ? "translate-y-0 opacity-100"
+                  : "-translate-y-4 opacity-0"
+              }`}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                    AI rewrite
+                  </p>
+                  <h3 className="text-lg font-semibold text-[var(--text)]">
+                    Professional summary
+                  </h3>
+                  <p className="text-xs text-[var(--muted)]">
+                    Refine tone, focus, and impact.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeSummaryAi}
+                  className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text)] hover:bg-[var(--surface-muted)]"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-xs text-[var(--muted)]">
+                  {draft.profile.summary ? (
+                    <div className="space-y-2">
+                      {renderSummaryBlocks(draft.profile.summary)}
+                    </div>
+                  ) : (
+                    "No summary yet. Add a few lines or use AI to draft one."
+                  )}
+                </div>
+                {summaryAiOriginal ? (
+                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                    <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                      <span>LinkedIn original</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          restoreProfileSummary();
+                          setSummaryAiPrompt("");
+                        }}
+                        className="text-[11px] font-semibold text-[var(--accent)] normal-case tracking-normal hover:underline"
+                      >
+                        Restore
+                      </button>
+                    </div>
+                    <div className="mt-2 space-y-2 text-xs text-[var(--muted)]">
+                      {renderSummaryBlocks(summaryAiOriginal)}
+                    </div>
+                  </div>
+                ) : null}
+                <textarea
+                  value={summaryAiPrompt}
+                  onChange={(event) => setSummaryAiPrompt(event.target.value)}
+                  placeholder="Tell the AI what to emphasize (tone, scope, impact, metrics)."
+                  className="input-base w-full min-h-[110px] resize-none"
+                />
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSummaryAiGenerate}
+                    className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={summaryAiState === "loading" || !edenEnabled}
+                  >
+                    {!edenEnabled
+                      ? "AI unavailable"
+                      : summaryAiState === "loading"
+                        ? "Generating..."
+                        : "Generate draft"}
+                  </button>
+                  {!edenEnabled && (
+                    <p className="text-xs text-[var(--muted)]">
+                      Add an Eden AI key to generate drafts.
+                    </p>
+                  )}
+                  {summaryAiError && (
+                    <p className="text-xs text-red-500">{summaryAiError}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                    Draft history
+                  </p>
+                  <span className="text-xs text-[var(--muted)]">
+                    {summaryAiEntries.length} drafts
+                  </span>
+                </div>
+                {summaryAiEntries.length > 0 ? (
+                  <div className="mt-3 max-h-[40vh] space-y-3 overflow-auto pr-1">
+                    {summaryAiEntries.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold uppercase text-[var(--muted)]">
+                            {entry.source === "auto" ? "Auto" : "You"}
+                          </span>
+                          <span className="text-[11px] text-[var(--muted)]">
+                            {new Date(entry.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-[var(--text)]">
+                          {entry.source === "auto"
+                            ? "Auto rewrite"
+                            : entry.prompt || "General rewrite"}
+                        </p>
+                        <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                          <p className="text-[11px] font-semibold uppercase text-[var(--muted)]">
+                            AI draft
+                          </p>
+                          {entry.summary ? (
+                            <div className="mt-2 space-y-2 text-sm text-[var(--text)]">
+                              {renderSummaryBlocks(entry.summary)}
+                            </div>
+                          ) : (
+                            <p className="mt-2 text-xs text-[var(--muted)]">
+                              No summary returned.
+                            </p>
+                          )}
+                        </div>
+                        <div className="mt-3 flex items-center justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              applySummarySuggestion(entry);
+                              setSummaryAiPrompt(
+                                entry.source === "auto" ? "" : entry.prompt,
+                              );
+                            }}
+                            className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text)] hover:bg-[var(--surface)]"
+                          >
+                            Use this draft
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-[var(--muted)]">
+                    No drafts yet. Add a prompt above to generate one.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {experienceAiVisible && experienceAiActive && experienceAiId && (
+          <div
+            className={`fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8 transition-opacity duration-200 ${
+              experienceAiOpen ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+            onClick={closeExperienceAi}
+          >
+            <div
+              className={`w-full max-w-3xl max-h-[85vh] overflow-y-auto rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl transition-all duration-200 ease-out ${
+                experienceAiOpen
+                  ? "translate-y-0 opacity-100"
+                  : "-translate-y-4 opacity-0"
+              }`}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                    AI rewrite
+                  </p>
+                  <h3 className="text-lg font-semibold text-[var(--text)]">
+                    {experienceAiActive.title || "Experience summary"}
+                  </h3>
+                  <p className="text-xs text-[var(--muted)]">
+                    {[experienceAiActive.company, experienceAiActive.location]
+                      .filter(Boolean)
+                      .join(" • ")}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeExperienceAi}
+                  className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text)] hover:bg-[var(--surface-muted)]"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-xs text-[var(--muted)]">
+                  {experienceAiActive.summary ? (
+                    <div className="space-y-2">
+                      {renderSummaryBlocks(experienceAiActive.summary)}
+                    </div>
+                  ) : (
+                    "No summary yet. Add a few lines or use AI to draft one."
+                  )}
+                </div>
+                {experienceAiOriginal &&
+                (experienceAiOriginal.summary ||
+                  (experienceAiOriginal.highlights?.length ?? 0) > 0) ? (
+                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                    <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                      <span>LinkedIn original</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (experienceAiId) {
+                            restoreExperienceFromScraped(experienceAiId);
+                          }
+                          setExperienceAiPrompt("");
+                        }}
+                        className="text-[11px] font-semibold text-[var(--accent)] normal-case tracking-normal hover:underline"
+                      >
+                        Restore
+                      </button>
+                    </div>
+                    {experienceAiOriginal.summary ? (
+                      <div className="mt-2 space-y-2 text-xs text-[var(--muted)]">
+                        {renderSummaryBlocks(experienceAiOriginal.summary)}
+                      </div>
+                    ) : null}
+                    {(experienceAiOriginal.highlights ?? []).length > 0 && (
+                      <ul className="mt-3 list-disc space-y-1 pl-4 text-xs text-[var(--muted)]">
+                        {(experienceAiOriginal.highlights ?? []).map(
+                          (item, index) => (
+                            <li
+                              key={`experience-original-${experienceAiOriginal.id}-${index}`}
+                            >
+                              {item}
+                            </li>
+                          ),
+                        )}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
+                <textarea
+                  value={experienceAiPrompt}
+                  onChange={(event) => setExperienceAiPrompt(event.target.value)}
+                  placeholder="Tell the AI what to emphasize (tone, scope, impact, metrics)."
+                  className="input-base w-full min-h-[110px] resize-none"
+                />
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleExperienceAiGenerate}
+                    className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={experienceAiState === "loading" || !edenEnabled}
+                  >
+                    {!edenEnabled
+                      ? "AI unavailable"
+                      : experienceAiState === "loading"
+                        ? "Generating..."
+                        : "Generate draft"}
+                  </button>
+                  {!edenEnabled && (
+                    <p className="text-xs text-[var(--muted)]">
+                      Add an Eden AI key to generate drafts.
+                    </p>
+                  )}
+                  {experienceAiError && (
+                    <p className="text-xs text-red-500">{experienceAiError}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                    Draft history
+                  </p>
+                  <span className="text-xs text-[var(--muted)]">
+                    {experienceAiEntries.length} drafts
+                  </span>
+                </div>
+                {experienceAiEntries.length > 0 ? (
+                  <div className="mt-3 max-h-[40vh] space-y-3 overflow-auto pr-1">
+                    {experienceAiEntries.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold uppercase text-[var(--muted)]">
+                            {entry.source === "auto" ? "Auto" : "You"}
+                          </span>
+                          <span className="text-[11px] text-[var(--muted)]">
+                            {new Date(entry.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-[var(--text)]">
+                          {entry.source === "auto"
+                            ? "Auto rewrite"
+                            : entry.prompt || "General rewrite"}
+                        </p>
+                        <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                          <p className="text-[11px] font-semibold uppercase text-[var(--muted)]">
+                            AI draft
+                          </p>
+                          {entry.summary ? (
+                            <div className="mt-2 space-y-2 text-sm text-[var(--text)]">
+                              {renderSummaryBlocks(entry.summary)}
+                            </div>
+                          ) : (
+                            <p className="mt-2 text-xs text-[var(--muted)]">
+                              No summary returned.
+                            </p>
+                          )}
+                          {entry.highlights.length > 0 && (
+                            <ul className="mt-3 list-disc space-y-1 pl-4 text-xs text-[var(--text)]">
+                              {entry.highlights.map((item, index) => (
+                                <li key={`${entry.id}-hl-${index}`}>
+                                  {item}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                        <div className="mt-3 flex items-center justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              applyExperienceSuggestion(experienceAiId, entry);
+                              setExperienceAiPrompt(
+                                entry.source === "auto" ? "" : entry.prompt,
+                              );
+                            }}
+                            className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--text)] hover:bg-[var(--surface)]"
+                          >
+                            Use this draft
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-[var(--muted)]">
+                    No drafts yet. Add a prompt above to generate one.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
         )}
 
         <footer className="border-t border-[var(--border)]/70">

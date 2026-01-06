@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 
 import { type ResumeDraft } from "~/lib/resume/types";
+import { parseSummaryBlocks } from "~/lib/resume/summary-format";
 import {
   DEFAULT_RESUME_THEME,
   type ResumeTheme,
@@ -67,6 +68,20 @@ const buildDocumentXml = (draft: ResumeDraft, theme: ResumeTheme) => {
   };
 
   const pushBlank = () => parts.push(paragraph(""));
+  const pushSummaryBlocks = (text: string, options?: ParagraphOptions) => {
+    const blocks = parseSummaryBlocks(text);
+    for (const block of blocks) {
+      if (block.type === "list") {
+        for (const line of block.lines) {
+          push(`- ${line}`, options);
+        }
+        continue;
+      }
+      for (const line of block.lines) {
+        push(line, options);
+      }
+    }
+  };
 
   const profile = draft.profile;
   const name = profile.fullName?.trim() ?? "";
@@ -100,7 +115,7 @@ const buildDocumentXml = (draft: ResumeDraft, theme: ResumeTheme) => {
       spacingBefore: 200,
       spacingAfter: 120,
     });
-    push(summary, { size: 20 });
+    pushSummaryBlocks(summary, { size: 20 });
     pushBlank();
   }
 
@@ -142,7 +157,7 @@ const buildDocumentXml = (draft: ResumeDraft, theme: ResumeTheme) => {
         push(metaParts.join(" | "), { size: 19 });
       }
       if (exp.summary?.trim()) {
-        push(exp.summary.trim(), { size: 20 });
+        pushSummaryBlocks(exp.summary.trim(), { size: 20 });
       }
       const highlights = (exp.highlights ?? []).filter((value) =>
         value.trim(),
