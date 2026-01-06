@@ -26,7 +26,8 @@ const LOG_ENABLED = env.AI_LOG_ENABLED === "true" || env.EDENAI_DEBUG === "true"
 const LOG_VERBOSE =
   env.AI_LOG_VERBOSE === "true" || env.EDENAI_DEBUG_VERBOSE === "true";
 const LOG_LEVEL_RAW =
-  env.AI_LOG_LEVEL ?? (LOG_ENABLED ? "info" : "error");
+  env.AI_LOG_LEVEL ??
+  (LOG_ENABLED ? (LOG_VERBOSE ? "debug" : "info") : "error");
 const LOG_LEVEL = (["error", "warn", "info", "debug"] as const).includes(
   LOG_LEVEL_RAW as AiLogLevel,
 )
@@ -55,6 +56,12 @@ export const formatPreview = (value: string) => {
   return value.length > PREVIEW_LIMIT
     ? `${value.slice(0, PREVIEW_LIMIT)}...`
     : value;
+};
+
+export const formatTailPreview = (value: string) => {
+  if (LOG_VERBOSE) return value;
+  if (value.length <= PREVIEW_LIMIT) return value;
+  return `...${value.slice(-PREVIEW_LIMIT)}`;
 };
 
 export const logAiEvent = async (event: AiLogEvent) => {

@@ -30,7 +30,9 @@ export const resumeLinkSchema = z.object({
 export const resumeProfileSchema = z.object({
   fullName: z.string(),
   headline: z.string().optional(),
+  targetRole: z.string().optional(),
   jobField: z.string().optional(),
+  jobType: z.string().optional(),
   email: z.string().optional(),
   phone: z.string().optional(),
   location: z.string().optional(),
@@ -75,7 +77,9 @@ export const createEmptyDraft = (): ResumeDraft => ({
   profile: {
     fullName: "",
     headline: "",
+    targetRole: "",
     jobField: "",
+    jobType: "",
     email: "",
     phone: "",
     location: "",
@@ -133,10 +137,7 @@ export const applyScrapedProfile = (
   return {
     ...draft,
     profile,
-    skills:
-      draft.skills.length > 0
-        ? draft.skills
-        : uniqueList((scraped.skills ?? []).map(normalizeText)),
+    skills: mergeSkills(draft.skills, scraped.skills ?? []),
     experiences:
       draft.experiences.some((item) => item.title || item.company)
         ? draft.experiences

@@ -39,7 +39,7 @@ const expandTextBlocks = async (page: {
   evaluate: <T>(fn: () => T) => Promise<T>;
 }) => {
   await page.evaluate(() => {
-    const labels = ["see more", "show more"];
+    const labels = ["see more", "show more", "show all", "see all", "view all"];
     const buttons = Array.from(
       document.querySelectorAll<HTMLButtonElement>("button"),
     );
@@ -51,6 +51,135 @@ const expandTextBlocks = async (page: {
       }
     }
   });
+};
+
+const extractSkillItems = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const normalize = (value: string) =>
+      value.replace(/\s+/g, " ").trim();
+    const parseEndorsements = (value: string) => {
+      const match = value.replace(/,/g, "").match(/\d+/);
+      if (!match) return null;
+      const parsed = Number.parseInt(match[0] ?? "0", 10);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const isSkillName = (value: string) => {
+      const lowered = value.toLowerCase();
+      if (!value) return false;
+      if (lowered.includes("endorsement")) return false;
+      if (lowered.includes("skills")) return false;
+      if (lowered.includes("show all")) return false;
+      if (lowered.includes("see all")) return false;
+      return true;
+    };
+
+    const results = new Map<string, { name: string; endorsements?: number }>();
+    const addSkill = (nameRaw: string, endorsements?: number | null) => {
+      const name = normalize(nameRaw);
+      if (!isSkillName(name)) return;
+      const key = name.toLowerCase();
+      if (!key) return;
+      const existing = results.get(key);
+      const nextValue = {
+        name,
+        endorsements:
+          typeof endorsements === "number" && Number.isFinite(endorsements)
+            ? endorsements
+            : undefined,
+      };
+      if (!existing) {
+        results.set(key, nextValue);
+        return;
+      }
+      const existingCount = existing.endorsements ?? 0;
+      const nextCount = nextValue.endorsements ?? 0;
+      if (nextCount > existingCount) {
+        results.set(key, nextValue);
+      }
+    };
+
+    const sections = Array.from(document.querySelectorAll("section"));
+    const skillsSection =
+      sections.find((section) => {
+        const heading = section.querySelector("h2, h3, span");
+        const headingText = heading?.textContent?.toLowerCase() ?? "";
+        return headingText.includes("skills");
+      }) ?? document.body;
+
+    const items = Array.from(skillsSection.querySelectorAll("li"));
+
+    for (const item of items) {
+      const rawText = item.innerText ?? item.textContent ?? "";
+      if (!rawText) continue;
+      const lines = rawText
+        .split("\n")
+        .map((line) => normalize(line))
+        .filter(Boolean);
+      if (!lines.length) continue;
+
+      const endorsementLine = lines.find((line) =>
+        line.toLowerCase().includes("endorsement"),
+      );
+      const endorsements = endorsementLine
+        ? parseEndorsements(endorsementLine)
+        : null;
+      const nameCandidate =
+        lines.find(
+          (line) =>
+            !line.toLowerCase().includes("endorsement") &&
+            !line.toLowerCase().includes("skills"),
+        ) ?? lines[0];
+      addSkill(nameCandidate, endorsements);
+    }
+
+    const bodyLines = (document.body.innerText ?? "")
+      .split("\n")
+      .map((line) => normalize(line))
+      .filter(Boolean);
+
+    for (let i = 0; i < bodyLines.length; i += 1) {
+      const line = bodyLines[i] ?? "";
+      const inlineMatch = line.match(/^(.+?)\s+(\d+)\s+endorsements?$/i);
+      if (inlineMatch) {
+        addSkill(inlineMatch[1] ?? "", parseEndorsements(inlineMatch[2] ?? ""));
+        continue;
+      }
+      if (line.toLowerCase().includes("endorsement")) {
+        const count = parseEndorsements(line);
+        const name = bodyLines[i - 1] ?? "";
+        addSkill(name, count);
+      }
+    }
+
+    return Array.from(results.values());
+  });
+};
+
+const expandSkillsList = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+  waitForTimeout: (ms: number) => Promise<void>;
+}) => {
+  for (let i = 0; i < 6; i += 1) {
+    const clicked = await page.evaluate(() => {
+      const labels = ["show more", "see more", "show all", "see all"];
+      const buttons = Array.from(
+        document.querySelectorAll<HTMLButtonElement>("button"),
+      );
+      for (const button of buttons) {
+        const text = button.innerText?.toLowerCase() ?? "";
+        const aria = button.getAttribute("aria-label")?.toLowerCase() ?? "";
+        if (labels.some((label) => text.includes(label) || aria.includes(label))) {
+          button.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    if (!clicked) break;
+    await page.waitForTimeout(700);
+  }
 };
 
 const safeGoto = async (
@@ -85,6 +214,7 @@ const buildDetailsUrls = (url: string) => {
       `${parsed.origin}${basePath}/details/experience/`,
       `${parsed.origin}${basePath}/details/education/`,
       `${parsed.origin}${basePath}/details/skills/`,
+      `${parsed.origin}${basePath}/details/recommendations/`,
     ];
   } catch {
     return [];
@@ -115,10 +245,32 @@ const scrapeDetails = async ({
         await autoScrollPage(page);
       }
       await expandTextBlocks(page);
-      const text = await page.evaluate(() => document.body.innerText);
+      if (detailsUrl.includes("/details/skills/")) {
+        await expandSkillsList(page);
+      }
+      await page.waitForTimeout(600);
+      const [html, text] = await Promise.all([
+        page.content(),
+        page.evaluate(() => {
+          const main = document.querySelector("main");
+          return (main?.innerText || document.body.innerText || "").trim();
+        }),
+      ]);
+      if (isAuthWall(html, text)) {
+        throw new Error("AUTH_WALL");
+      }
       if (text) {
         const label = detailsUrl.split("/details/")[1]?.split("/")[0];
         sections.push(`${(label ?? "details").toUpperCase()}_DETAILS\n${text}`);
+
+        if (label === "skills") {
+          const skills = await extractSkillItems(page);
+          if (skills.length > 0) {
+            sections.push(
+              `SKILLS_ENDORSEMENTS_JSON\n${JSON.stringify(skills)}`,
+            );
+          }
+        }
       }
     } catch {
       // ignore detail page failures

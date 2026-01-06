@@ -29,11 +29,40 @@ type FollowupResult = {
 
 const hasMetric = (text: string | undefined) => /\d/.test(text ?? "");
 
+const MAX_FOLLOWUP_QUESTIONS = 4;
+
 const buildHeuristicQuestions = (
   draft: ResumeDraft,
   scraped: ScrapedProfile | null,
 ): FollowupQuestion[] => {
   const questions: FollowupQuestion[] = [];
+
+  if (!draft.profile.targetRole?.trim()) {
+    questions.push({
+      key: "target_role",
+      label: "What role title are you targeting?",
+      inputType: "text",
+      placeholder: "Example: Senior IT Systems Engineer",
+    });
+  }
+
+  if (!draft.profile.jobField?.trim()) {
+    questions.push({
+      key: "target_field",
+      label: "What field or industry should we optimize for?",
+      inputType: "text",
+      placeholder: "Example: IT infrastructure, cybersecurity",
+    });
+  }
+
+  if (!draft.profile.jobType?.trim()) {
+    questions.push({
+      key: "job_type",
+      label: "What job type are you open to?",
+      inputType: "text",
+      placeholder: "Example: Full-time, contract, freelance",
+    });
+  }
 
   if (!draft.profile.summary || draft.profile.summary.trim().length < 80) {
     questions.push({
@@ -140,7 +169,7 @@ const buildHeuristicQuestions = (
     });
   });
 
-  return questions.slice(0, 6);
+  return questions.slice(0, MAX_FOLLOWUP_QUESTIONS);
 };
 
 const buildPrompt = (draft: ResumeDraft, scraped: ScrapedProfile | null) => {
@@ -148,10 +177,13 @@ const buildPrompt = (draft: ResumeDraft, scraped: ScrapedProfile | null) => {
     "You are a resume coach and talent advisor.",
     "Return ONLY valid JSON in the format:",
     '{"questions":[{"key":"short_key","label":"question","inputType":"text|textarea|choice","placeholder":"optional","options":["optional"],"hint":"optional","prefill":"optional"}]}',
-    "Ask 3 to 7 follow-up questions that fill missing info or verify scraped-only items.",
+    "Ask 2 to 4 follow-up questions that fill missing info or verify scraped-only items.",
     "Do not ask for data already present in the draft.",
     "Favor questions about measurable impact, scope, tools, and notable projects.",
+    "If tools, applications, or programs are missing from experience summaries, ask which ones to include.",
     "If skills or experiences exist in the scrape but not the draft, ask whether to include them and where.",
+    "If target role, target field, or job type is missing, ask one short question to fill it.",
+    "Use any recommendations text to suggest stronger phrasing, but do not ask the user to paste recommendations.",
     "Ask for short summaries or facts, not bullet formatting.",
     "Use ASCII only. Keep each label to one sentence.",
   ].join("\n");
@@ -471,7 +503,10 @@ export const generateFollowupQuestions = async ({
   const aiQuestions = await callEdenAi(draft, scraped);
 
   if (aiQuestions && aiQuestions.length > 0) {
-    const merged = dedupeQuestions([...heuristic, ...aiQuestions]).slice(0, 8);
+    const merged = dedupeQuestions([...heuristic, ...aiQuestions]).slice(
+      0,
+      MAX_FOLLOWUP_QUESTIONS,
+    );
     return {
       questions: merged,
       source: heuristic.length > 0 ? "mix" : "ai",

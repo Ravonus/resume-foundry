@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   applyScrapedProfile,
@@ -65,6 +65,18 @@ type ResumeWizardProps = {
   edenEnabled?: boolean;
 };
 
+type ResumeTheme = {
+  accent: string;
+  accentSoft: string;
+  accentInk: string;
+};
+
+const DEFAULT_RESUME_THEME: ResumeTheme = {
+  accent: "#1f5c7a",
+  accentSoft: "#d9e6ef",
+  accentInk: "#f6fbff",
+};
+
 const baseSteps: Step[] = [
   {
     id: "name",
@@ -81,11 +93,26 @@ const baseSteps: Step[] = [
     placeholder: "Senior Product Designer",
   },
   {
+    id: "target-role",
+    kind: "text",
+    label: "Target role",
+    field: "targetRole",
+    placeholder: "Product Designer, Growth Lead, Data Analyst",
+  },
+  {
     id: "job-field",
     kind: "text",
     label: "Target field",
     field: "jobField",
     placeholder: "Product design, data science, growth marketing",
+  },
+  {
+    id: "job-type",
+    kind: "text",
+    label: "Job type",
+    field: "jobType",
+    placeholder: "Full-time, contract, freelance",
+    hint: "Optional.",
   },
   {
     id: "email",
@@ -120,7 +147,7 @@ const baseSteps: Step[] = [
     id: "skills",
     kind: "skills",
     label: "Key skills",
-    hint: "Enter to add. Click a pill to remove.",
+    hint: "Enter to add. Click a pill to remove. Press Enter on empty to continue.",
   },
   {
     id: "experience",
@@ -219,6 +246,67 @@ const cleanDraft = (draft: ResumeDraft) => ({
   links: draft.links.filter((item) => !isLinkEmpty(item)),
 });
 
+const normalizeExperiences = (
+  items: ResumeDraft["experiences"] | undefined,
+) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [createBlankExperience()];
+  }
+  return items.map((item) => ({
+    ...createBlankExperience(),
+    ...item,
+    id: item.id ?? createItemId(),
+  }));
+};
+
+const normalizeEducation = (items: ResumeDraft["education"] | undefined) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [createBlankEducation()];
+  }
+  return items.map((item) => ({
+    ...createBlankEducation(),
+    ...item,
+    id: item.id ?? createItemId(),
+  }));
+};
+
+const normalizeLinks = (items: ResumeDraft["links"] | undefined) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [createBlankLink()];
+  }
+  return items.map((item) => ({
+    ...createBlankLink(),
+    ...item,
+    id: item.id ?? createItemId(),
+  }));
+};
+
+const normalizeDraft = (value: ResumeDraft) => {
+  const base = createEmptyDraft();
+  return {
+    ...base,
+    ...value,
+    profile: { ...base.profile, ...(value.profile ?? {}) },
+    skills: Array.isArray(value.skills) ? value.skills : base.skills,
+    experiences: normalizeExperiences(value.experiences),
+    education: normalizeEducation(value.education),
+    links: normalizeLinks(value.links),
+  };
+};
+
+const normalizeSteps = (stored?: Step[]) => {
+  if (!stored || stored.length === 0) return baseSteps;
+  const storedIds = new Set(stored.map((step) => step.id));
+  const hasAllBase = baseSteps.every((step) => storedIds.has(step.id));
+  if (!hasAllBase) return baseSteps;
+  return stored;
+};
+
+const hasAllBaseSteps = (steps: Step[]) => {
+  const ids = new Set(steps.map((step) => step.id));
+  return baseSteps.every((step) => ids.has(step.id));
+};
+
 export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
   const STORAGE_KEY = "resumeWizardState.v1";
   const [draft, setDraft] = useState<ResumeDraft>(() => createEmptyDraft());
@@ -267,6 +355,19 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
   const [educationSearch, setEducationSearch] = useState("");
   const [linkSearch, setLinkSearch] = useState("");
   const [isHydrated, setIsHydrated] = useState(false);
+  const [exportDocxState, setExportDocxState] = useState<
+    "idle" | "loading" | "success" | "error"
+  >("idle");
+  const [exportPdfState, setExportPdfState] = useState<
+    "idle" | "loading" | "success" | "error"
+  >("idle");
+  const [exportError, setExportError] = useState("");
+  const [resumeTheme, setResumeTheme] = useState<ResumeTheme | null>(null);
+  const [polishPrompt, setPolishPrompt] = useState("");
+  const [polishState, setPolishState] = useState<
+    "idle" | "loading" | "success" | "error"
+  >("idle");
+  const [polishError, setPolishError] = useState("");
 
   useEffect(() => {
     const stored =
@@ -310,9 +411,18 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
         linkedinUrl?: string;
       };
 
-      if (parsed.draft) setDraft(parsed.draft);
+      if (parsed.draft) setDraft(normalizeDraft(parsed.draft));
       if (parsed.scraped !== undefined) setScraped(parsed.scraped ?? null);
-      if (parsed.steps && parsed.steps.length > 0) setSteps(parsed.steps);
+      if (parsed.steps && parsed.steps.length > 0) {
+        const nextSteps = normalizeSteps(parsed.steps);
+        setSteps(nextSteps);
+        if (
+          typeof parsed.currentStep === "number" &&
+          parsed.currentStep >= nextSteps.length
+        ) {
+          setCurrentStep(nextSteps.length - 1);
+        }
+      }
       if (typeof parsed.currentStep === "number") {
         setCurrentStep(Math.max(0, parsed.currentStep));
       }
@@ -515,6 +625,15 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
       setCurrentStep(Math.max(0, steps.length - 1));
     }
   }, [currentStep, steps.length]);
+
+  useEffect(() => {
+    if (!hasAllBaseSteps(steps)) {
+      setSteps(baseSteps);
+      setCurrentStep(0);
+      setSkillFollowupsAdded(false);
+      setDynamicStepsAdded(false);
+    }
+  }, [steps]);
 
   const progress = useMemo(() => {
     return Math.round(((currentStep + 1) / steps.length) * 100);
@@ -743,6 +862,291 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
     }
   };
 
+  const resolveTheme = async (cleaned: ResumeDraft) => {
+    if (resumeTheme) return resumeTheme;
+    try {
+      const response = await fetch("/api/resume/theme", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cleaned),
+      });
+      if (!response.ok) {
+        return DEFAULT_RESUME_THEME;
+      }
+      const data = (await response.json()) as { theme?: ResumeTheme };
+      if (data.theme) {
+        setResumeTheme(data.theme);
+        return data.theme;
+      }
+    } catch {
+      return DEFAULT_RESUME_THEME;
+    }
+    return DEFAULT_RESUME_THEME;
+  };
+
+  const handleExportDocx = async () => {
+    if (exportDocxState === "loading") return;
+    setExportDocxState("loading");
+    setExportError("");
+
+    const cleaned = cleanDraft(normalizeDraft(draft));
+    const theme = await resolveTheme(cleaned);
+
+    try {
+      const response = await fetch("/api/resume/export/docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draft: cleaned, theme }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setExportDocxState("error");
+        setExportError(data?.error ?? "Could not generate your resume.");
+        return;
+      }
+
+      const blob = await response.blob();
+      const fileName =
+        cleaned.profile.fullName?.trim().replace(/[^a-z0-9]+/gi, "_") ||
+        "resume";
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${fileName}.docx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setExportDocxState("success");
+    } catch (error) {
+      setExportDocxState("error");
+      setExportError("Could not generate your resume.");
+    }
+  };
+
+  const handleExportPdf = async () => {
+    if (exportPdfState === "loading") return;
+    setExportPdfState("loading");
+    setExportError("");
+
+    const cleaned = cleanDraft(normalizeDraft(draft));
+    const theme = await resolveTheme(cleaned);
+    const name = cleaned.profile.fullName?.trim() || "Resume";
+    const headline = cleaned.profile.headline?.trim() || "";
+    const contactParts = [
+      cleaned.profile.email?.trim(),
+      cleaned.profile.phone?.trim(),
+      cleaned.profile.location?.trim(),
+      cleaned.profile.website?.trim(),
+      ...cleaned.links.map((link) => link.url?.trim()).filter(Boolean),
+    ].filter(Boolean);
+
+    const section = (title: string, body: string) =>
+      body
+        ? `<section><h2>${title}</h2>${body}</section>`
+        : "";
+
+    const summary = cleaned.profile.summary?.trim()
+      ? `<p>${cleaned.profile.summary.trim()}</p>`
+      : "";
+
+    const skills = cleaned.skills.length
+      ? `<p>${cleaned.skills.join(", ")}</p>`
+      : "";
+
+    const experiences = cleaned.experiences
+      .filter((exp) => exp.title || exp.company)
+      .map((exp) => {
+        const title = [exp.title, exp.company].filter(Boolean).join(" - ");
+        const metaParts = [
+          [exp.startDate, exp.endDate].filter(Boolean).join(" - "),
+          exp.location ?? "",
+        ]
+          .map((value) => value.trim())
+          .filter(Boolean);
+        const meta = metaParts.length ? `<div class="meta">${metaParts.join(" | ")}</div>` : "";
+        const summaryText = exp.summary?.trim()
+          ? `<p>${exp.summary.trim()}</p>`
+          : "";
+        const highlights = (exp.highlights ?? [])
+          .filter((value) => value.trim())
+          .map((value) => `<li>${value.trim()}</li>`)
+          .join("");
+        const highlightList = highlights ? `<ul>${highlights}</ul>` : "";
+        return `<div class="block"><h3>${title}</h3>${meta}${summaryText}${highlightList}</div>`;
+      })
+      .join("");
+
+    const education = cleaned.education
+      .filter((edu) => edu.school)
+      .map((edu) => {
+        const title = [edu.school, edu.degree].filter(Boolean).join(" - ");
+        const metaParts = [
+          edu.field ?? "",
+          [edu.startDate, edu.endDate].filter(Boolean).join(" - "),
+        ]
+          .map((value) => value.trim())
+          .filter(Boolean);
+        const meta = metaParts.length ? `<div class="meta">${metaParts.join(" | ")}</div>` : "";
+        const notes = edu.notes?.trim() ? `<p>${edu.notes.trim()}</p>` : "";
+        return `<div class="block"><h3>${title}</h3>${meta}${notes}</div>`;
+      })
+      .join("");
+
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${name} Resume</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --accent: ${theme.accent};
+        --accent-soft: ${theme.accentSoft};
+        --accent-ink: ${theme.accentInk};
+      }
+      body {
+        font-family: "IBM Plex Serif", "Times New Roman", serif;
+        color: #101418;
+        margin: 40px;
+        line-height: 1.5;
+        background: #ffffff;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 4px;
+        color: var(--accent);
+      }
+      h2 {
+        font-size: 16px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin: 24px 0 8px;
+        color: var(--accent);
+        border-bottom: 1px solid var(--accent);
+        padding-bottom: 4px;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 12px 0 4px;
+      }
+      p, li {
+        font-size: 12.5px;
+        margin: 0 0 6px;
+      }
+      ul {
+        margin: 6px 0 12px 18px;
+        padding: 0;
+      }
+      .meta {
+        font-size: 11.5px;
+        color: #5a6774;
+        margin-bottom: 6px;
+      }
+      .block {
+        margin-bottom: 12px;
+      }
+      .contact {
+        font-size: 12px;
+        color: #3d4a57;
+        margin-bottom: 12px;
+      }
+      .headline {
+        font-size: 13.5px;
+        margin-bottom: 8px;
+      }
+      header {
+        border-bottom: 2px solid var(--accent);
+        padding-bottom: 12px;
+        margin-bottom: 16px;
+      }
+      @media print {
+        body {
+          margin: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>${name}</h1>
+      ${headline ? `<div class="headline">${headline}</div>` : ""}
+      ${contactParts.length ? `<div class="contact">${contactParts.join(" | ")}</div>` : ""}
+    </header>
+    ${section("Summary", summary)}
+    ${section("Skills", skills)}
+    ${section("Experience", experiences)}
+    ${section("Education", education)}
+  </body>
+</html>`;
+
+    try {
+      const printWindow = window.open("", "_blank", "width=900,height=1200");
+      if (!printWindow) {
+        setExportPdfState("error");
+        setExportError("Pop-up blocked. Allow pop-ups to download PDF.");
+        return;
+      }
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+        setExportPdfState("success");
+      }, 350);
+    } catch (error) {
+      setExportPdfState("error");
+      setExportError("Could not generate your PDF.");
+    }
+  };
+
+  const handlePolish = async () => {
+    if (polishState === "loading") return;
+    setPolishState("loading");
+    setPolishError("");
+
+    const cleaned = cleanDraft(normalizeDraft(draft));
+
+    try {
+      const response = await fetch("/api/ai/polish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draft: cleaned,
+          scraped,
+          prompt: polishPrompt.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setPolishState("error");
+        setPolishError(data?.error ?? "We could not polish your resume.");
+        return;
+      }
+
+      const data = (await response.json()) as { draft: ResumeDraft };
+      if (data?.draft) {
+        setDraft(data.draft);
+        setPolishState("success");
+        return;
+      }
+
+      setPolishState("error");
+      setPolishError("We could not polish your resume.");
+    } catch (error) {
+      setPolishState("error");
+      setPolishError("We could not polish your resume.");
+    }
+  };
+
   const updateProfileField = (
     field: keyof ResumeDraft["profile"],
     value: string,
@@ -936,9 +1340,11 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
     if (dynamicLoading) return;
 
     const current = steps[currentStep];
-    const workingDraft = overrideDraft ?? draft;
+    const workingDraft = normalizeDraft(
+      overrideDraft ?? draft ?? createEmptyDraft(),
+    );
     if (current.kind === "skills" && !skillFollowupsAdded) {
-      const selected = workingDraft.skills.map(normalizeSkill);
+      const selected = (workingDraft.skills ?? []).map(normalizeSkill);
       const missing: string[] = [];
       for (const skill of scraped?.skills ?? []) {
         const normalized = normalizeSkill(skill);
@@ -949,7 +1355,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
       }
 
       if (missing.length > 0) {
-        const followups: Step[] = missing.map((skill) => ({
+        const followups: Step[] = missing.slice(0, 6).map((skill) => ({
           id: `confirm-skill-${normalizeSkill(skill)}`,
           kind: "confirm-skill",
           label: `Include "${skill}" from your import?`,
@@ -1058,7 +1464,9 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
   const hasDraftData = Boolean(
     (draft.profile.fullName ?? "").trim() ||
       (draft.profile.headline ?? "").trim() ||
+      (draft.profile.targetRole ?? "").trim() ||
       (draft.profile.jobField ?? "").trim() ||
+      (draft.profile.jobType ?? "").trim() ||
       (draft.profile.email ?? "").trim() ||
       (draft.profile.location ?? "").trim() ||
       (draft.profile.summary ?? "").trim() ||
@@ -1076,8 +1484,9 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
     dynamicStepsAdded ||
     hasDraftData;
   const reviewLine = [
-    draft.profile.headline || "Your headline",
+    draft.profile.headline || draft.profile.targetRole || "Your headline",
     draft.profile.jobField || "Target field",
+    draft.profile.jobType || "Job type",
     draft.profile.location || "Location",
   ].join(" | ");
   const nextLabel = dynamicLoading
@@ -1564,16 +1973,18 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
                       <div className="space-y-4">
                         <div className="space-y-3">
                           <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
-                            Roles
+                            Jobs
                           </p>
                           <div className="flex flex-wrap gap-2">
                             {draft.experiences
                               .filter((item) => !isExperienceEmpty(item))
                               .map((experience) => {
                                 const label =
-                                  experience.title ||
-                                  experience.company ||
-                                  "Untitled role";
+                                  experience.title && experience.company
+                                    ? `${experience.title} \u00b7 ${experience.company}`
+                                    : experience.title ||
+                                      experience.company ||
+                                      "Untitled job";
                                 const isActive =
                                   experience.id === activeExperienceId;
                                 return (
@@ -1601,7 +2012,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
                                 setExperienceSearch(event.target.value)
                               }
                               onKeyDown={handleExperienceSearchKeyDown}
-                              placeholder="Search or add a role (e.g. Designer at Atlas)"
+                              placeholder="Search or add a job (e.g. Designer at Atlas)"
                               className="input-base w-full"
                             />
                             {experienceSuggestions.length > 0 && (
@@ -1722,7 +2133,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
                           </div>
                         ) : (
                           <p className="text-sm text-[var(--muted)]">
-                            Add your first role to continue.
+                            Add your first job to continue.
                           </p>
                         )}
                       </div>
@@ -2109,9 +2520,67 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
                               ))}
                           </div>
                         </div>
-                        <button type="button" className="btn-primary">
-                          Generate free resume
-                        </button>
+                        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                          <div className="space-y-2">
+                            <p className="text-sm font-semibold">
+                              Polish with AI
+                            </p>
+                            <p className="text-xs text-[var(--muted)]">
+                              Optional. Rewrite summary and highlights with a
+                              stronger story.
+                            </p>
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            <textarea
+                              value={polishPrompt}
+                              onChange={(event) =>
+                                setPolishPrompt(event.target.value)
+                              }
+                              placeholder="Tone or focus (e.g. executive, emphasize automation, crisp bullets)"
+                              className="input-base w-full min-h-[90px] resize-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={handlePolish}
+                              className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                              disabled={polishState === "loading"}
+                            >
+                              {polishState === "loading"
+                                ? "Regenerating..."
+                                : "Regenerate with AI"}
+                            </button>
+                            {polishError && (
+                              <p className="text-xs text-red-500">
+                                {polishError}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={handleExportPdf}
+                            className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={exportPdfState === "loading"}
+                          >
+                            {exportPdfState === "loading"
+                              ? "Preparing PDF..."
+                              : "Download PDF"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleExportDocx}
+                            className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={exportDocxState === "loading"}
+                          >
+                            {exportDocxState === "loading"
+                              ? "Generating..."
+                              : "Download DOCX"}
+                          </button>
+                        </div>
+                        {exportError && (
+                          <p className="text-xs text-red-500">{exportError}</p>
+                        )}
                         <p className="text-xs text-[var(--muted)]">
                           You can edit any step after export.
                         </p>
@@ -2187,22 +2656,32 @@ type SkillInputProps = {
   suggestions: string[];
 };
 
-function SkillInput({ value, onChange, suggestions }: SkillInputProps) {
+function SkillInput({ value = [], onChange, suggestions }: SkillInputProps) {
   const [input, setInput] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const addSkill = (skill: string) => {
     const trimmed = skill.trim();
     if (!trimmed) return;
     onChange(mergeSkills(value, [trimmed]));
     setInput("");
+    inputRef.current?.focus();
   };
 
   const removeSkill = (skill: string) => {
     onChange(value.filter((item) => item !== skill));
+    inputRef.current?.focus();
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter" || event.key === ",") {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (input.trim()) {
+        addSkill(input);
+      }
+      return;
+    }
+    if (event.key === ",") {
       event.preventDefault();
       addSkill(input);
     }
@@ -2226,6 +2705,7 @@ function SkillInput({ value, onChange, suggestions }: SkillInputProps) {
           </button>
         ))}
         <input
+          ref={inputRef}
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleKeyDown}
@@ -2235,17 +2715,20 @@ function SkillInput({ value, onChange, suggestions }: SkillInputProps) {
       </div>
 
       {suggested.length > 0 && (
-        <div className="rounded-2xl bg-[var(--surface-muted)] p-4">
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-4">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
             Imported
           </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {suggested.slice(0, 12).map((skill) => (
+          <p className="mt-2 text-xs text-[var(--muted)]">
+            Tap to add
+          </p>
+          <div className="mt-3 flex max-h-36 flex-wrap gap-2 overflow-y-auto pr-2">
+            {suggested.map((skill) => (
               <button
                 key={skill}
                 type="button"
                 onClick={() => addSkill(skill)}
-                className="rounded-lg bg-[var(--accent-soft)] px-3 py-1 text-xs text-[var(--accent)]"
+                className="rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)] px-3 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]"
               >
                 {skill}
               </button>
