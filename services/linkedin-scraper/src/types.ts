@@ -22,6 +22,39 @@ export type ScrapeResult = {
     html?: string;
     text?: string;
     screenshotUrl?: string;
+    detailsHtml?: Record<string, string>;
+    detailsData?: {
+      profile?: {
+        fullName?: string;
+        headline?: string;
+        location?: string;
+        summary?: string;
+      };
+      experiences?: Array<{
+        id?: string;
+        title?: string;
+        company?: string;
+        location?: string;
+        startDate?: string;
+        endDate?: string;
+        summary?: string;
+        highlights?: string[];
+      }>;
+      education?: Array<{
+        id?: string;
+        school?: string;
+        degree?: string;
+        field?: string;
+        startDate?: string;
+        endDate?: string;
+        notes?: string;
+      }>;
+      skills?: Array<{
+        name: string;
+        endorsements?: number;
+      }>;
+      recommendations?: string[];
+    };
   };
 };
 

@@ -11,6 +11,8 @@ const scraperResponseSchema = z
         html: z.string().optional(),
         text: z.string().optional(),
         screenshotUrl: z.string().url().optional(),
+        detailsHtml: z.record(z.string()).optional(),
+        detailsData: z.record(z.unknown()).optional(),
       })
       .optional(),
   })

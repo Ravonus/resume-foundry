@@ -40,14 +40,14 @@ const expandTextBlocks = async (page: {
 }) => {
   await page.evaluate(() => {
     const labels = ["see more", "show more", "show all", "see all", "view all"];
-    const buttons = Array.from(
-      document.querySelectorAll<HTMLButtonElement>("button"),
+    const clickable = Array.from(
+      document.querySelectorAll<HTMLElement>("button, a, [role='button']"),
     );
-    for (const button of buttons) {
-      const text = button.innerText?.toLowerCase() ?? "";
-      const aria = button.getAttribute("aria-label")?.toLowerCase() ?? "";
+    for (const element of clickable) {
+      const text = element.innerText?.toLowerCase() ?? "";
+      const aria = element.getAttribute("aria-label")?.toLowerCase() ?? "";
       if (labels.some((label) => text.includes(label) || aria.includes(label))) {
-        button.click();
+        element.click();
       }
     }
   });
@@ -57,28 +57,20 @@ const extractSkillItems = async (page: {
   evaluate: <T>(fn: () => T) => Promise<T>;
 }) => {
   return page.evaluate(() => {
-    const normalize = (value: string) =>
-      value.replace(/\s+/g, " ").trim();
-    const parseEndorsements = (value: string) => {
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+    function parseEndorsements(value: string) {
       const match = value.replace(/,/g, "").match(/\d+/);
       if (!match) return null;
       const parsed = Number.parseInt(match[0] ?? "0", 10);
       return Number.isFinite(parsed) ? parsed : null;
-    };
-    const isSkillName = (value: string) => {
-      const lowered = value.toLowerCase();
-      if (!value) return false;
-      if (lowered.includes("endorsement")) return false;
-      if (lowered.includes("skills")) return false;
-      if (lowered.includes("show all")) return false;
-      if (lowered.includes("see all")) return false;
-      return true;
-    };
+    }
 
     const results = new Map<string, { name: string; endorsements?: number }>();
-    const addSkill = (nameRaw: string, endorsements?: number | null) => {
+    function addSkill(nameRaw: string, endorsements?: number | null) {
       const name = normalize(nameRaw);
-      if (!isSkillName(name)) return;
+      if (!name) return;
       const key = name.toLowerCase();
       if (!key) return;
       const existing = results.get(key);
@@ -98,62 +90,314 @@ const extractSkillItems = async (page: {
       if (nextCount > existingCount) {
         results.set(key, nextValue);
       }
-    };
-
-    const sections = Array.from(document.querySelectorAll("section"));
-    const skillsSection =
-      sections.find((section) => {
-        const heading = section.querySelector("h2, h3, span");
-        const headingText = heading?.textContent?.toLowerCase() ?? "";
-        return headingText.includes("skills");
-      }) ?? document.body;
-
-    const items = Array.from(skillsSection.querySelectorAll("li"));
-
-    for (const item of items) {
-      const rawText = item.innerText ?? item.textContent ?? "";
-      if (!rawText) continue;
-      const lines = rawText
-        .split("\n")
-        .map((line) => normalize(line))
-        .filter(Boolean);
-      if (!lines.length) continue;
-
-      const endorsementLine = lines.find((line) =>
-        line.toLowerCase().includes("endorsement"),
-      );
-      const endorsements = endorsementLine
-        ? parseEndorsements(endorsementLine)
-        : null;
-      const nameCandidate =
-        lines.find(
-          (line) =>
-            !line.toLowerCase().includes("endorsement") &&
-            !line.toLowerCase().includes("skills"),
-        ) ?? lines[0];
-      addSkill(nameCandidate, endorsements);
     }
 
-    const bodyLines = (document.body.innerText ?? "")
-      .split("\n")
-      .map((line) => normalize(line))
-      .filter(Boolean);
+    function isCategoryHeading(value: string) {
+      const lower = value.toLowerCase();
+      return (
+        lower === "all" ||
+        lower === "industry knowledge" ||
+        lower === "tools & technologies" ||
+        lower === "tools and technologies" ||
+        lower === "top skills"
+      );
+    }
 
-    for (let i = 0; i < bodyLines.length; i += 1) {
-      const line = bodyLines[i] ?? "";
-      const inlineMatch = line.match(/^(.+?)\s+(\d+)\s+endorsements?$/i);
-      if (inlineMatch) {
-        addSkill(inlineMatch[1] ?? "", parseEndorsements(inlineMatch[2] ?? ""));
-        continue;
-      }
-      if (line.toLowerCase().includes("endorsement")) {
-        const count = parseEndorsements(line);
-        const name = bodyLines[i - 1] ?? "";
-        addSkill(name, count);
-      }
+    const main = document.querySelector("main") ?? document.body;
+    const scaffold =
+      document.querySelector(".scaffold-finite-scroll__content") ?? main;
+    const topLevelItems = Array.from(
+      scaffold.querySelectorAll("li.pvs-list__paged-list-item"),
+    ).filter((item) => {
+      if (item.id && item.id.toLowerCase().includes("skills")) return true;
+      return Boolean(item.querySelector("a[data-field='skill_page_skill_topic']"));
+    });
+
+    const items =
+      topLevelItems.length > 0
+        ? topLevelItems
+        : Array.from(
+            scaffold.querySelectorAll(
+              "li.pvs-list__paged-list-item, li.pvs-list__item--line-separated",
+            ),
+          );
+
+    for (const item of items) {
+      const nameEl =
+        item.querySelector(
+          "a[data-field='skill_page_skill_topic'] .t-bold span[aria-hidden='true']",
+        ) ?? item.querySelector(".t-bold span[aria-hidden='true']");
+      const name = nameEl?.textContent?.trim() ?? "";
+      if (!name) continue;
+      if (name.toLowerCase().includes("endorse")) continue;
+      if (isCategoryHeading(name)) continue;
+
+      const itemText = item.textContent ?? "";
+      const endorsementMatch = itemText
+        .replace(/,/g, "")
+        .match(/(\d+)\s+endorsements?/i);
+      const endorsements = endorsementMatch
+        ? parseEndorsements(endorsementMatch[1] ?? "")
+        : null;
+      addSkill(name, endorsements);
     }
 
     return Array.from(results.values());
+  });
+};
+
+const extractProfileDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    function text(value?: string | null) {
+      return (value ?? "").trim();
+    }
+    const name =
+      text(
+        document.querySelector("h1.text-heading-xlarge")?.textContent,
+      ) || text(document.querySelector("h1")?.textContent);
+    const headline = text(
+      document.querySelector(".text-body-medium")?.textContent,
+    );
+
+    const locationCandidates = Array.from(
+      document.querySelectorAll(".text-body-small"),
+    )
+      .map((el) => text(el.textContent))
+      .filter(Boolean);
+    const location =
+      locationCandidates.find((value) => value.includes(",")) ??
+      locationCandidates[0] ??
+      "";
+
+    let summary = "";
+    const sections = Array.from(document.querySelectorAll("section"));
+    const aboutSection = sections.find((section) => {
+      const heading =
+        section.querySelector("h2, h3, span")?.textContent?.toLowerCase() ?? "";
+      return heading.includes("about");
+    });
+    if (aboutSection) {
+      const raw = text(
+        (aboutSection as HTMLElement).innerText || aboutSection.textContent,
+      );
+      const lines = raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((line) => !/^about$/i.test(line))
+        .filter((line) => !/^(see|show)\s+more$/i.test(line));
+      const normalized = lines
+        .map((line) => line.replace(/^about\s+/i, "").trim())
+        .filter(Boolean);
+      const seen = new Set<string>();
+      const deduped = normalized.filter((line) => {
+        const key = line.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      summary = deduped.join("\n").trim();
+    }
+
+    return { fullName: name, headline, location, summary };
+  });
+};
+
+const extractExperienceDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const items = Array.from(document.querySelectorAll('li[id*="EXPERIENCE"]'));
+    const nodes =
+      items.length > 0
+        ? items
+        : Array.from(
+            document.querySelectorAll("li.pvs-list__paged-list-item"),
+          );
+
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+    function parseDateRange(value: string) {
+      const match = value.match(
+        /(\b[A-Za-z]{3,9}\s+\d{4})\s*(?:-|to)\s*(Present|[A-Za-z]{3,9}\s+\d{4})/i,
+      );
+      if (!match) return { startDate: "", endDate: "" };
+      return { startDate: match[1] ?? "", endDate: match[2] ?? "" };
+    }
+
+    const rows = nodes
+      .map((item) => {
+        const title = normalize(
+          item
+            .querySelector(".t-bold span[aria-hidden='true']")
+            ?.textContent ?? "",
+        );
+        const companyLine = normalize(
+          item
+            .querySelector("span.t-14.t-normal span[aria-hidden='true']")
+            ?.textContent ?? "",
+        );
+        const company = companyLine.split("·")[0]?.trim() ?? "";
+        const dateLine = normalize(
+          item.querySelector(".pvs-entity__caption-wrapper")?.textContent ?? "",
+        );
+        const { startDate, endDate } = parseDateRange(dateLine);
+
+        const locationCandidates = Array.from(
+          item.querySelectorAll(
+            "span.t-14.t-normal.t-black--light span[aria-hidden='true']",
+          ),
+        )
+          .filter((el) => el.closest("li") === item)
+          .map((el) => normalize(el.textContent ?? ""))
+          .filter(Boolean);
+        const location =
+          locationCandidates.find((value) => !value.match(/\b\d{4}\b/)) ?? "";
+
+        const scopedBlocks = Array.from(
+          item.querySelectorAll(
+            ".pvs-entity__sub-components .t-14.t-normal.t-black",
+          ),
+        );
+        const blocks =
+          scopedBlocks.length > 0
+            ? scopedBlocks
+            : Array.from(item.querySelectorAll("div.t-14.t-normal.t-black"));
+        const chunks = blocks.flatMap((block) => {
+          const hidden = Array.from(
+            block.querySelectorAll("span.visually-hidden"),
+          )
+            .map((el) =>
+              ((el as HTMLElement).innerText || el.textContent || "").trim(),
+            )
+            .filter(Boolean);
+          if (hidden.length > 0) return hidden;
+          const visible =
+            (block as HTMLElement).innerText || block.textContent || "";
+          return visible ? [visible.trim()] : [];
+        });
+
+        const uniqueChunks = Array.from(
+          new Set(chunks.map((value) => value.trim()).filter(Boolean)),
+        );
+        const description = uniqueChunks.join("\n");
+        const descriptionLines = description
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const highlights = descriptionLines
+          .filter((line) => /^[-*•]/.test(line))
+          .map((line) => line.replace(/^[-*•]\s*/, "").trim())
+          .filter(Boolean);
+
+        return {
+          id: item.id || undefined,
+          title,
+          company,
+          location,
+          startDate,
+          endDate,
+          summary: descriptionLines.join("\n").trim(),
+          highlights,
+        };
+      })
+      .filter((item) => item.title || item.company);
+
+    const seen = new Set<string>();
+    return rows.filter((item) => {
+      const key = `${item.title}|${item.company}|${item.startDate}|${item.endDate}`
+        .toLowerCase()
+        .trim();
+      if (!key || key === "|||") return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
+};
+
+const extractEducationDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const items = Array.from(document.querySelectorAll('li[id*="EDUCATION"]'));
+    const nodes =
+      items.length > 0
+        ? items
+        : Array.from(
+            document.querySelectorAll("li.pvs-list__paged-list-item"),
+          );
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+    function parseDateRange(value: string) {
+      const match = value.match(/(\b\d{4})\s*(?:-|to)\s*(Present|\d{4})/i);
+      if (!match) return { startDate: "", endDate: "" };
+      return { startDate: match[1] ?? "", endDate: match[2] ?? "" };
+    }
+
+    return nodes
+      .map((item) => {
+        const school = normalize(
+          item
+            .querySelector(".t-bold span[aria-hidden='true']")
+            ?.textContent ?? "",
+        );
+        const detailLines = Array.from(
+          item.querySelectorAll("span.t-14.t-normal span[aria-hidden='true']"),
+        )
+          .map((el) => normalize(el.textContent ?? ""))
+          .filter(Boolean);
+        const degreeLine =
+          detailLines.find((line) => line !== school) ?? "";
+        const dateLine = normalize(
+          item.querySelector(".pvs-entity__caption-wrapper")?.textContent ?? "",
+        );
+        const { startDate, endDate } = parseDateRange(dateLine);
+
+        const notesBlock = item.querySelector("div.t-14.t-normal.t-black");
+        const notes = normalize(
+          (notesBlock as HTMLElement | null)?.innerText ||
+            notesBlock?.textContent ||
+            "",
+        );
+
+        return {
+          id: item.id || undefined,
+          school,
+          degree: degreeLine,
+          field: "",
+          startDate,
+          endDate,
+          notes,
+        };
+      })
+      .filter((item) => item.school);
+  });
+};
+
+const extractRecommendationsDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const sections = Array.from(document.querySelectorAll("section"));
+    const recSection = sections.find((section) => {
+      const heading =
+        section.querySelector("h2, h3, span")?.textContent?.toLowerCase() ?? "";
+      return heading.includes("recommendations");
+    });
+    const scope = recSection ?? document.body;
+    const items = Array.from(scope.querySelectorAll("li"));
+    const chunks = items
+      .map((item) => {
+        const hidden = item.querySelector("span.visually-hidden");
+        return (hidden?.textContent ?? item.textContent ?? "").trim();
+      })
+      .filter((value) => value.length > 40);
+    return Array.from(new Set(chunks));
   });
 };
 
@@ -164,14 +408,14 @@ const expandSkillsList = async (page: {
   for (let i = 0; i < 6; i += 1) {
     const clicked = await page.evaluate(() => {
       const labels = ["show more", "see more", "show all", "see all"];
-      const buttons = Array.from(
-        document.querySelectorAll<HTMLButtonElement>("button"),
+      const clickable = Array.from(
+        document.querySelectorAll<HTMLElement>("button, a, [role='button']"),
       );
-      for (const button of buttons) {
-        const text = button.innerText?.toLowerCase() ?? "";
-        const aria = button.getAttribute("aria-label")?.toLowerCase() ?? "";
+      for (const element of clickable) {
+        const text = element.innerText?.toLowerCase() ?? "";
+        const aria = element.getAttribute("aria-label")?.toLowerCase() ?? "";
         if (labels.some((label) => text.includes(label) || aria.includes(label))) {
-          button.click();
+          element.click();
           return true;
         }
       }
@@ -235,6 +479,13 @@ const scrapeDetails = async ({
   autoScroll: boolean;
 }) => {
   const sections: string[] = [];
+  const detailHtml: Record<string, string> = {};
+  const detailData: {
+    experiences?: Awaited<ReturnType<typeof extractExperienceDetails>>;
+    education?: Awaited<ReturnType<typeof extractEducationDetails>>;
+    skills?: Awaited<ReturnType<typeof extractSkillItems>>;
+    recommendations?: Awaited<ReturnType<typeof extractRecommendationsDetails>>;
+  } = {};
 
   for (const detailsUrl of urls) {
     const page = await context.newPage();
@@ -259,18 +510,39 @@ const scrapeDetails = async ({
       if (isAuthWall(html, text)) {
         throw new Error("AUTH_WALL");
       }
-      if (text) {
-        const label = detailsUrl.split("/details/")[1]?.split("/")[0];
-        sections.push(`${(label ?? "details").toUpperCase()}_DETAILS\n${text}`);
-
-        if (label === "skills") {
-          const skills = await extractSkillItems(page);
-          if (skills.length > 0) {
-            sections.push(
-              `SKILLS_ENDORSEMENTS_JSON\n${JSON.stringify(skills)}`,
-            );
-          }
+      const label = detailsUrl.split("/details/")[1]?.split("/")[0];
+      if (label && html) {
+        detailHtml[label] = html;
+      }
+      if (label === "experience") {
+        const experiences = await extractExperienceDetails(page);
+        if (experiences.length > 0) {
+          detailData.experiences = experiences;
         }
+      }
+      if (label === "education") {
+        const education = await extractEducationDetails(page);
+        if (education.length > 0) {
+          detailData.education = education;
+        }
+      }
+      if (label === "skills") {
+        const skills = await extractSkillItems(page);
+        if (skills.length > 0) {
+          detailData.skills = skills;
+          sections.push(
+            `SKILLS_ENDORSEMENTS_JSON\n${JSON.stringify(skills)}`,
+          );
+        }
+      }
+      if (label === "recommendations") {
+        const recommendations = await extractRecommendationsDetails(page);
+        if (recommendations.length > 0) {
+          detailData.recommendations = recommendations;
+        }
+      }
+      if (text) {
+        sections.push(`${(label ?? "details").toUpperCase()}_DETAILS\n${text}`);
       }
     } catch {
       // ignore detail page failures
@@ -279,7 +551,7 @@ const scrapeDetails = async ({
     }
   }
 
-  return sections;
+  return { sections, detailHtml, detailData };
 };
 
 const parseProxy = (proxy?: string) => {
@@ -348,6 +620,9 @@ export const scrapeLinkedIn = async ({
       locale: options.locale ?? "en-US",
       viewport: { width: 1280, height: 720 },
     });
+    await context.addInitScript({
+      content: "globalThis.__name = (fn) => fn;",
+    });
     const page = await context.newPage();
 
     if (stealth) {
@@ -373,10 +648,11 @@ export const scrapeLinkedIn = async ({
     }
     await expandTextBlocks(page);
 
-    const [html, text, screenshotBuffer] = await Promise.all([
+    const [html, text, screenshotBuffer, profileDetails] = await Promise.all([
       page.content(),
       page.evaluate(() => document.body.innerText),
       options.screenshot ? page.screenshot({ fullPage: true }) : null,
+      extractProfileDetails(page),
     ]);
 
     if (isAuthWall(html, text)) {
@@ -388,7 +664,7 @@ export const scrapeLinkedIn = async ({
         ? await writeScreenshot(id, screenshotBuffer)
         : undefined;
 
-    const detailSections = expandDetails
+    const detailPayload = expandDetails
       ? await scrapeDetails({
           context,
           urls: buildDetailsUrls(url),
@@ -396,9 +672,9 @@ export const scrapeLinkedIn = async ({
           timeoutMs,
           autoScroll,
         })
-      : [];
-    const combinedText = detailSections.length
-      ? [...detailSections, `PROFILE_PAGE\n${text}`].join("\n\n")
+      : { sections: [], detailHtml: {}, detailData: {} };
+    const combinedText = detailPayload.sections.length
+      ? [...detailPayload.sections, `PROFILE_PAGE\n${text}`].join("\n\n")
       : text;
 
     return {
@@ -406,6 +682,11 @@ export const scrapeLinkedIn = async ({
         html,
         text: combinedText,
         screenshotUrl,
+        detailsHtml: detailPayload.detailHtml,
+        detailsData: {
+          ...detailPayload.detailData,
+          profile: profileDetails,
+        },
       },
     };
   } finally {

@@ -30,6 +30,7 @@ export const env = createEnv({
     LINKEDIN_SCRAPER_URL: z.string().url().optional(),
     LINKEDIN_SCRAPER_API_KEY: z.string().optional(),
     LINKEDIN_SCRAPER_TIMEOUT_MS: z.coerce.number().optional(),
+    LINKEDIN_EXTRACT_MULTI: z.string().optional(),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
@@ -70,6 +71,7 @@ export const env = createEnv({
     LINKEDIN_SCRAPER_URL: process.env.LINKEDIN_SCRAPER_URL,
     LINKEDIN_SCRAPER_API_KEY: process.env.LINKEDIN_SCRAPER_API_KEY,
     LINKEDIN_SCRAPER_TIMEOUT_MS: process.env.LINKEDIN_SCRAPER_TIMEOUT_MS,
+    LINKEDIN_EXTRACT_MULTI: process.env.LINKEDIN_EXTRACT_MULTI,
     NODE_ENV: process.env.NODE_ENV,
   },
   /**

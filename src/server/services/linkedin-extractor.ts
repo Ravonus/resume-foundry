@@ -1,3 +1,4 @@
+import { load } from "cheerio";
 import { jsonrepair } from "jsonrepair";
 
 import { env } from "~/env";
@@ -47,6 +48,9 @@ const normalizeSectionText = (text: string) => {
 const EXPERIENCE_DATE_REGEX =
   /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*(?:-|to)\s*(?:Present|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4})/i;
 
+const EDUCATION_DATE_REGEX =
+  /\b(?:\d{4})\s*(?:-|to)\s*(?:Present|\d{4})\b/i;
+
 const EMPLOYMENT_HINTS = [
   "full-time",
   "part-time",
@@ -58,6 +62,73 @@ const EMPLOYMENT_HINTS = [
   "seasonal",
   "apprenticeship",
 ];
+
+const PROFILE_SECTION_HEADERS = new Set([
+  "about",
+  "activity",
+  "experience",
+  "education",
+  "skills",
+  "recommendations",
+  "interests",
+  "projects",
+  "certifications",
+  "licenses",
+  "honors",
+  "publications",
+  "volunteering",
+  "courses",
+]);
+
+const PROFILE_NOISE = [
+  "skip to",
+  "home",
+  "my network",
+  "jobs",
+  "messaging",
+  "notifications",
+  "me",
+  "for business",
+  "resources",
+  "analytics",
+  "show all",
+  "get started",
+  "open to",
+  "add profile section",
+  "enhance profile",
+  "private to you",
+  "connections",
+  "followers",
+  "message",
+  "connect",
+  "people you may know",
+  "who your viewers also viewed",
+  "visit our help center",
+];
+
+const EDU_DEGREE_KEYWORDS = [
+  "bachelor",
+  "master",
+  "associate",
+  "doctor",
+  "phd",
+  "mba",
+  "b.s",
+  "bs",
+  "b.a",
+  "ba",
+  "m.s",
+  "ms",
+  "m.a",
+  "ma",
+  "high school",
+  "highschool",
+  "diploma",
+  "certificate",
+  "certification",
+];
+
+const normalizeKey = (value: string) => value.trim().toLowerCase();
 
 const parseDateRange = (line: string) => {
   const match = line.match(
@@ -72,6 +143,13 @@ const parseDateRange = (line: string) => {
 
 const stripCompanySuffix = (line: string) =>
   line.split("·")[0]?.trim() ?? line.trim();
+
+const isProfileNoiseLine = (line: string) => {
+  const normalized = normalizeKey(line);
+  if (!normalized) return true;
+  if (PROFILE_SECTION_HEADERS.has(normalized)) return false;
+  return PROFILE_NOISE.some((noise) => normalized.includes(noise));
+};
 
 const looksLikeCompanyLine = (line: string) => {
   const normalized = normalizeKey(line);
@@ -96,6 +174,14 @@ const isNoiseLine = (line: string) => {
 
 const isBulletLine = (line: string) => /^[-*•]\s+/.test(line);
 
+const looksLikeName = (line: string) => {
+  if (!line || line.length < 3 || line.length > 70) return false;
+  if (/\d/.test(line)) return false;
+  const words = line.trim().split(/\s+/);
+  if (words.length < 2 || words.length > 4) return false;
+  return words.every((word) => /^[A-Z][a-zA-Z'.-]*$/.test(word));
+};
+
 const looksLikeLocation = (line: string) => {
   const normalized = line.trim();
   if (!normalized) return false;
@@ -106,45 +192,489 @@ const looksLikeLocation = (line: string) => {
   return /(area|united states|remote)/i.test(normalized);
 };
 
+const decodeHtml = (value: string) =>
+  value
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&ndash;/g, "-")
+    .replace(/&mdash;/g, "-");
+
+const htmlToText = (value: string) => {
+  const withBreaks = value
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n");
+  const stripped = withBreaks.replace(/<[^>]*>/g, "");
+  return decodeHtml(stripped)
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+};
+
+const splitSummaryHighlights = (text: string) => {
+  if (!text) return { summary: "", highlights: [] as string[] };
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const highlights: string[] = [];
+  const summaryLines: string[] = [];
+  for (const line of lines) {
+    if (/^[-*•]/.test(line)) {
+      highlights.push(line.replace(/^[-*•]\s*/, "").trim());
+    }
+    summaryLines.push(line);
+  }
+  return { summary: summaryLines.join("\n").trim(), highlights };
+};
+
+const parseExperienceFromHtml = (html: string) => {
+  if (!html) return [];
+  const $ = load(html);
+  const items = $('li[id*="EXPERIENCE"]');
+  const fallbackItems =
+    items.length > 0 ? items : $("li.pvs-list__paged-list-item");
+
+  const experiences: {
+    id?: string;
+    title: string;
+    company: string;
+    location: string;
+    startDate: string;
+    endDate: string;
+    summary: string;
+    highlights: string[];
+  }[] = [];
+
+  fallbackItems.each((_, element) => {
+    const item = $(element);
+    const itemId = item.attr("id") ?? "";
+    const title = item
+      .find(".t-bold span[aria-hidden='true']")
+      .first()
+      .text()
+      .trim();
+    const companyLine = item
+      .find("span.t-14.t-normal span[aria-hidden='true']")
+      .first()
+      .text()
+      .trim();
+    const company = companyLine.split("·")[0]?.trim() ?? "";
+
+    const dateRaw = item
+      .find(".pvs-entity__caption-wrapper")
+      .first()
+      .text()
+      .trim();
+    const dateText = dateRaw.split("·")[0]?.trim() ?? dateRaw;
+    const { startDate, endDate } = parseDateRange(dateText);
+
+    const locationCandidates = item
+      .find("span.t-14.t-normal.t-black--light span[aria-hidden='true']")
+      .map((_, el) => $(el).text().trim())
+      .get()
+      .filter(Boolean);
+    const location =
+      locationCandidates.find(
+        (value) => !EXPERIENCE_DATE_REGEX.test(value),
+      ) ?? "";
+
+    let descriptionText = "";
+    const descriptionChunks: string[] = [];
+    const scopedBlocks = item.find(
+      ".pvs-entity__sub-components .t-14.t-normal.t-black",
+    );
+    const descriptionBlocks =
+      scopedBlocks.length > 0
+        ? scopedBlocks
+        : item.find("div.t-14.t-normal.t-black");
+    descriptionBlocks.each((_, block) => {
+      const blockNode = $(block);
+      const hiddenSpans = blockNode.find("span.visually-hidden");
+      if (hiddenSpans.length > 0) {
+        hiddenSpans.each((_, span) => {
+          const htmlSource = $(span).html();
+          if (htmlSource) descriptionChunks.push(htmlToText(htmlSource));
+        });
+        return;
+      }
+      const visibleSpans = blockNode.find("span[aria-hidden='true']");
+      visibleSpans.each((_, span) => {
+        const htmlSource = $(span).html();
+        if (htmlSource) descriptionChunks.push(htmlToText(htmlSource));
+      });
+    });
+
+    if (descriptionChunks.length > 0) {
+      descriptionText = dedupeByKey(descriptionChunks, (value) =>
+        normalizeKey(value),
+      ).join("\n");
+    }
+
+    const { summary, highlights } = splitSummaryHighlights(descriptionText);
+
+    const hasAny = Boolean(
+      title || company || location || startDate || endDate || summary,
+    );
+    if (!hasAny) return;
+
+    experiences.push({
+      id: itemId,
+      title,
+      company,
+      location,
+      startDate,
+      endDate,
+      summary,
+      highlights,
+    });
+  });
+
+  return dedupeByKey(experiences, (item) =>
+    normalizeKey(
+      item.id
+        ? item.id
+        : `${item.title}|${item.company}|${item.startDate}|${item.endDate}`,
+    ),
+  );
+};
+
+const parseEducationFromHtml = (html: string) => {
+  if (!html) return [];
+  const $ = load(html);
+  const items = $('li[id*="EDUCATION"]');
+  const fallbackItems =
+    items.length > 0 ? items : $("li.pvs-list__paged-list-item");
+
+  const education: {
+    school: string;
+    degree: string;
+    field: string;
+    startDate: string;
+    endDate: string;
+    notes: string;
+  }[] = [];
+
+  fallbackItems.each((_, element) => {
+    const item = $(element);
+    const school = item
+      .find(".t-bold span[aria-hidden='true']")
+      .first()
+      .text()
+      .trim();
+    if (!school) return;
+
+    const detailLines = item
+      .find("span.t-14.t-normal span[aria-hidden='true']")
+      .map((_, el) => $(el).text().trim())
+      .get()
+      .filter(Boolean);
+    const degreeLine =
+      detailLines.find(
+        (line) =>
+          line !== school &&
+          !EDUCATION_DATE_REGEX.test(line) &&
+          !looksLikeLocation(line),
+      ) ?? "";
+    const { degree, field } = degreeLine
+      ? splitDegreeField(degreeLine)
+      : { degree: "", field: "" };
+
+    const dateRaw = item
+      .find(".pvs-entity__caption-wrapper")
+      .first()
+      .text()
+      .trim();
+    const { startDate, endDate } = parseEducationDateRange(dateRaw);
+
+    let notes = "";
+    const notesContainer = item.find(".pvs-entity__sub-components").first();
+    if (notesContainer.length > 0) {
+      const hiddenSpan = notesContainer.find("span.visually-hidden").first();
+      const htmlSource = hiddenSpan.length
+        ? hiddenSpan.html()
+        : notesContainer.find("span[aria-hidden='true']").first().html();
+      if (htmlSource) {
+        notes = htmlToText(htmlSource);
+      }
+    }
+
+    education.push({
+      school,
+      degree,
+      field,
+      startDate,
+      endDate,
+      notes,
+    });
+  });
+
+  return dedupeByKey(education, (item) =>
+    normalizeKey(
+      `${item.school}|${item.degree}|${item.field}|${item.startDate}|${item.endDate}`,
+    ),
+  );
+};
+
+const parseSkillsFromHtml = (html: string) => {
+  if (!html) return [];
+  const $ = load(html);
+  const results = new Map<string, { name: string; endorsements?: number }>();
+
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+  const parseEndorsements = (value: string) => {
+    const match = value.replace(/,/g, "").match(/\d+/);
+    if (!match) return null;
+    const parsed = Number.parseInt(match[0] ?? "0", 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const isSkillName = (value: string) => {
+    const lowered = value.toLowerCase();
+    if (!value) return false;
+    if (lowered.includes("endorsement")) return false;
+    if (lowered.includes("skills")) return false;
+    if (lowered.includes("show all")) return false;
+    if (lowered.includes("see all")) return false;
+    if (lowered.includes("industry knowledge")) return false;
+    if (lowered.includes("tools") && lowered.includes("technolog")) return false;
+    return true;
+  };
+  const addSkill = (nameRaw: string, endorsements?: number | null) => {
+    const name = normalize(nameRaw);
+    if (!isSkillName(name)) return;
+    const key = name.toLowerCase();
+    if (!key) return;
+    const existing = results.get(key);
+    const nextValue = {
+      name,
+      endorsements:
+        typeof endorsements === "number" && Number.isFinite(endorsements)
+          ? endorsements
+          : undefined,
+    };
+    if (!existing) {
+      results.set(key, nextValue);
+      return;
+    }
+    const existingCount = existing.endorsements ?? 0;
+    const nextCount = nextValue.endorsements ?? 0;
+    if (nextCount > existingCount) {
+      results.set(key, nextValue);
+    }
+  };
+
+  const sections = $("section");
+  let skillsSection: ReturnType<typeof $> = $();
+  sections.each((_, element) => {
+    if (skillsSection.length > 0) return;
+    const heading = $(element).find("h2, h3, span").first().text().trim();
+    if (heading.toLowerCase().includes("skills")) {
+      skillsSection = $(element);
+    }
+  });
+  const items = (skillsSection.length ? skillsSection : $.root()).find("li");
+  items.each((_, element) => {
+    const elementNode = $(element);
+    const boldSpan = elementNode
+      .find(".t-bold span[aria-hidden='true']")
+      .first()
+      .text()
+      .trim();
+    const rawText = boldSpan || elementNode.text();
+    if (!rawText) return;
+    const lines = rawText
+      .split("\n")
+      .map((line) => normalize(line))
+      .filter(Boolean);
+    if (!lines.length) return;
+
+    const endorsementLine = lines.find((line) =>
+      line.toLowerCase().includes("endorsement"),
+    );
+    const endorsements = endorsementLine
+      ? parseEndorsements(endorsementLine)
+      : null;
+    const nameCandidate =
+      lines.find(
+        (line) =>
+          !line.toLowerCase().includes("endorsement") &&
+          !line.toLowerCase().includes("skills"),
+      ) ?? lines[0];
+    addSkill(nameCandidate ?? "", endorsements);
+  });
+
+  return Array.from(results.values())
+    .sort((a, b) => (b.endorsements ?? 0) - (a.endorsements ?? 0))
+    .map((item) => item.name);
+};
+
+const parseRecommendationsFromHtml = (html: string) => {
+  if (!html) return "";
+  const $ = load(html);
+  const blocks: string[] = [];
+  const sections = $("section");
+  let recSection: ReturnType<typeof $> = $();
+  sections.each((_, element) => {
+    if (recSection.length > 0) return;
+    const heading = $(element).find("h2, h3, span").first().text().trim();
+    if (heading.toLowerCase().includes("recommendations")) {
+      recSection = $(element);
+    }
+  });
+
+  const items = (recSection.length ? recSection : $.root()).find("li");
+
+  items.each((_, element) => {
+    const item = $(element);
+    const hidden = item.find("span.visually-hidden").first();
+    const htmlSource = hidden.length
+      ? hidden.html()
+      : item.find("span[aria-hidden='true']").first().html();
+    if (!htmlSource) return;
+    const text = htmlToText(htmlSource);
+    if (text.length < 40) return;
+    if (text.toLowerCase().includes("recommendations")) return;
+    blocks.push(text);
+  });
+
+  return dedupeByKey(blocks, (value) => normalizeKey(value)).join("\n");
+};
+
+const parseProfileFromHtml = (html: string) => {
+  if (!html) return undefined;
+  const $ = load(html);
+  const main = $("main").first();
+  const header = main.length ? main : $.root();
+
+  const name =
+    header.find("h1.text-heading-xlarge").first().text().trim() ||
+    header.find("h1").first().text().trim();
+  const headline = header
+    .find(".text-body-medium")
+    .first()
+    .text()
+    .trim();
+  const location = header
+    .find(".text-body-small")
+    .filter((_, el) => {
+      const text = $(el).text();
+      return looksLikeLocation(text);
+    })
+    .first()
+    .text()
+    .trim();
+
+  let summary = "";
+  const aboutSection = header
+    .find("section")
+    .filter((_, el) => {
+      const heading = $(el).find("h2, h3, span").first().text().trim();
+      return heading.toLowerCase() === "about";
+    })
+    .first();
+  if (aboutSection.length > 0) {
+    const htmlSource = aboutSection.html();
+    const rawText = htmlSource
+      ? htmlToText(htmlSource)
+      : aboutSection.text().replace(/\s+/g, " ").trim();
+    const lines = rawText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !/^about$/i.test(line))
+      .filter((line) => !/^(see|show)\s+more$/i.test(line));
+    const normalized = lines
+      .map((line) => line.replace(/^about\s+/i, "").trim())
+      .filter(Boolean);
+    const deduped = dedupeByKey(normalized, (value) => normalizeKey(value));
+    summary = deduped.join("\n").trim();
+  }
+
+  const profile = {
+    fullName: name,
+    headline,
+    targetRole: "",
+    jobField: "",
+    jobType: "",
+    email: "",
+    phone: "",
+    location,
+    website: "",
+    summary,
+  };
+
+  return normalizeProfile(profile);
+};
+
 const parseExperienceFallback = (text: string) => {
   if (!text) return [];
   const lines = normalizeSectionText(text)
     .split("\n")
     .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => !isNoiseLine(line));
+    .filter(Boolean);
 
-  const markers: {
-    titleIndex: number;
-    companyIndex: number;
-    title: string;
-    company: string;
-  }[] = [];
-
-  const nextNonNoiseIndex = (start: number) => {
-    for (let i = start; i < lines.length; i += 1) {
+  const findPrevIndex = (
+    start: number,
+    predicate: (line: string) => boolean,
+  ) => {
+    for (let i = start; i >= 0; i -= 1) {
       const line = lines[i];
       if (!line || isNoiseLine(line)) continue;
-      return i;
+      if (predicate(line)) return i;
     }
     return -1;
   };
 
-  for (let i = 0; i < lines.length - 1; i += 1) {
-    const line = lines[i];
-    if (!line) continue;
-    if (isNoiseLine(line) || isBulletLine(line)) continue;
-    if (EXPERIENCE_DATE_REGEX.test(line)) continue;
-    const nextIndex = nextNonNoiseIndex(i + 1);
-    if (nextIndex === -1) break;
-    const nextLine = lines[nextIndex];
-    if (!looksLikeCompanyLine(nextLine)) continue;
-    markers.push({
-      titleIndex: i,
-      companyIndex: nextIndex,
-      title: line,
-      company: stripCompanySuffix(nextLine),
-    });
+  const dateIndices = lines
+    .map((line, index) => (EXPERIENCE_DATE_REGEX.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+
+  if (dateIndices.length === 0) return [];
+
+  const markers: {
+    titleIndex: number;
+    companyIndex: number;
+    dateIndex: number;
+  }[] = [];
+
+  for (let idx = 0; idx < dateIndices.length; idx += 1) {
+    const dateIndex = dateIndices[idx];
+    const beforeDateIndex = findPrevIndex(dateIndex - 1, () => true);
+    if (beforeDateIndex < 0) continue;
+
+    let titleIndex = -1;
+    let companyIndex = -1;
+
+    if (looksLikeCompanyLine(lines[beforeDateIndex])) {
+      companyIndex = beforeDateIndex;
+      titleIndex = findPrevIndex(companyIndex - 1, (line) => {
+        if (isBulletLine(line)) return false;
+        if (EXPERIENCE_DATE_REGEX.test(line)) return false;
+        if (looksLikeCompanyLine(line)) return false;
+        if (looksLikeLocation(line)) return false;
+        return true;
+      });
+    } else {
+      titleIndex = beforeDateIndex;
+      companyIndex = findPrevIndex(titleIndex - 1, (line) =>
+        looksLikeCompanyLine(line),
+      );
+      if (companyIndex < 0) {
+        companyIndex = findPrevIndex(titleIndex - 1, (line) => {
+          if (isBulletLine(line)) return false;
+          if (EXPERIENCE_DATE_REGEX.test(line)) return false;
+          if (looksLikeLocation(line)) return false;
+          return true;
+        });
+      }
+    }
+
+    markers.push({ titleIndex, companyIndex, dateIndex });
   }
 
   if (markers.length === 0) return [];
@@ -152,7 +682,13 @@ const parseExperienceFallback = (text: string) => {
   const dedupedMarkers: typeof markers = [];
   const seenMarkerKeys = new Set<string>();
   for (const marker of markers) {
-    const key = normalizeKey(`${marker.title}|${marker.company}`);
+    const title = marker.titleIndex >= 0 ? lines[marker.titleIndex] : "";
+    const company =
+      marker.companyIndex >= 0
+        ? stripCompanySuffix(lines[marker.companyIndex])
+        : "";
+    const { startDate, endDate } = parseDateRange(lines[marker.dateIndex]);
+    const key = normalizeKey(`${title}|${company}|${startDate}|${endDate}`);
     if (!key || seenMarkerKeys.has(key)) continue;
     seenMarkerKeys.add(key);
     dedupedMarkers.push(marker);
@@ -171,22 +707,23 @@ const parseExperienceFallback = (text: string) => {
   for (let i = 0; i < dedupedMarkers.length; i += 1) {
     const marker = dedupedMarkers[i];
     const nextMarker = dedupedMarkers[i + 1];
-    const title = marker.title;
-    const company = marker.company;
-    const endBoundary = nextMarker?.titleIndex ?? lines.length;
+    const title =
+      marker.titleIndex >= 0 ? lines[marker.titleIndex] : "";
+    const company =
+      marker.companyIndex >= 0
+        ? stripCompanySuffix(lines[marker.companyIndex])
+        : "";
+    const { startDate, endDate } = parseDateRange(lines[marker.dateIndex]);
+    const nextStart = nextMarker
+      ? Math.min(
+          nextMarker.titleIndex >= 0 ? nextMarker.titleIndex : lines.length,
+          nextMarker.companyIndex >= 0 ? nextMarker.companyIndex : lines.length,
+          nextMarker.dateIndex,
+        )
+      : lines.length;
 
-    let dateIndex = -1;
-    for (let j = marker.companyIndex + 1; j < endBoundary; j += 1) {
-      const line = lines[j];
-      if (EXPERIENCE_DATE_REGEX.test(line)) {
-        dateIndex = j;
-        break;
-      }
-    }
-
-    const detailStart =
-      dateIndex >= 0 ? dateIndex + 1 : marker.companyIndex + 1;
-    const detailEnd = Math.max(detailStart, endBoundary - 1);
+    const detailStart = marker.dateIndex + 1;
+    const detailEnd = Math.max(detailStart, nextStart - 1);
     const details = lines.slice(detailStart, detailEnd + 1);
 
     let location = "";
@@ -197,13 +734,13 @@ const parseExperienceFallback = (text: string) => {
     for (const detail of details) {
       if (!detail || isNoiseLine(detail)) continue;
       if (detail === title || detail === company) continue;
-      if (looksLikeCompanyLine(detail)) continue;
       if (EXPERIENCE_DATE_REGEX.test(detail)) continue;
       const normalizedDetail = normalizeKey(detail);
       if (normalizedDetail && seenDetail.has(normalizedDetail)) continue;
       if (normalizedDetail) seenDetail.add(normalizedDetail);
       if (isBulletLine(detail)) {
         highlights.push(detail.replace(/^[-*•]\s+/, "").trim());
+        summaryLines.push(detail);
         continue;
       }
       if (!location && looksLikeLocation(detail)) {
@@ -213,9 +750,7 @@ const parseExperienceFallback = (text: string) => {
       summaryLines.push(detail);
     }
 
-    const { startDate, endDate } =
-      dateIndex >= 0 ? parseDateRange(lines[dateIndex]) : parseDateRange("");
-    const summary = summaryLines.join(" ").trim();
+    const summary = summaryLines.join("\n").trim();
 
     if (title || company || summary || highlights.length > 0) {
       roles.push({
@@ -231,6 +766,211 @@ const parseExperienceFallback = (text: string) => {
   }
 
   return roles;
+};
+
+const parseProfileSummary = (lines: string[]) => {
+  const startIndex = lines.findIndex(
+    (line) => normalizeKey(line) === "about",
+  );
+  if (startIndex === -1) return "";
+
+  const summaryLines: string[] = [];
+  const seen = new Set<string>();
+  for (let i = startIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    const normalized = normalizeKey(line);
+    if (PROFILE_SECTION_HEADERS.has(normalized)) break;
+    if (isProfileNoiseLine(line)) continue;
+    if (normalized && seen.has(normalized)) continue;
+    if (normalized) seen.add(normalized);
+    summaryLines.push(line);
+  }
+
+  return summaryLines.join(" ").trim();
+};
+
+const parseProfileFallback = (profileText: string) => {
+  if (!profileText) return undefined;
+  const lines = normalizeSectionText(profileText)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const counts = new Map<string, number>();
+  for (const line of lines) {
+    counts.set(line, (counts.get(line) ?? 0) + 1);
+  }
+
+  const nameCandidates = lines.filter(
+    (line) => !isProfileNoiseLine(line) && looksLikeName(line),
+  );
+  const fullName =
+    nameCandidates.sort(
+      (a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0),
+    )[0] ?? "";
+  const nameIndex = fullName ? lines.indexOf(fullName) : -1;
+
+  const findNextLine = (
+    start: number,
+    predicate: (line: string) => boolean,
+  ) => {
+    for (let i = start; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line || isProfileNoiseLine(line)) continue;
+      if (predicate(line)) return line;
+    }
+    return "";
+  };
+
+  const headline =
+    nameIndex >= 0
+      ? findNextLine(nameIndex + 1, (line) => {
+          if (line === fullName) return false;
+          if (looksLikeName(line)) return false;
+          if (looksLikeLocation(line)) return false;
+          return true;
+        })
+      : "";
+
+  const location =
+    nameIndex >= 0
+      ? findNextLine(nameIndex + 1, (line) => looksLikeLocation(line))
+      : "";
+
+  const summary = parseProfileSummary(lines);
+
+  const profile = {
+    fullName,
+    headline,
+    targetRole: "",
+    jobField: "",
+    jobType: "",
+    email: "",
+    phone: "",
+    location,
+    website: "",
+    summary,
+  };
+
+  return normalizeProfile(profile);
+};
+
+function parseEducationDateRange(line: string) {
+  const match = line.match(
+    /(\b\d{4})\s*(?:-|to)\s*(Present|\d{4})/i,
+  );
+  if (!match) return { startDate: "", endDate: "" };
+  return { startDate: match[1], endDate: match[2] };
+}
+
+function looksLikeDegreeLine(line: string) {
+  const normalized = normalizeKey(line);
+  if (!normalized) return false;
+  return EDU_DEGREE_KEYWORDS.some((keyword) =>
+    normalized.includes(keyword),
+  );
+}
+
+function splitDegreeField(line: string) {
+  const commaParts = line
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (commaParts.length > 1) {
+    return { degree: commaParts[0], field: commaParts.slice(1).join(", ") };
+  }
+  const inParts = line.split(/\s+in\s+/i).map((part) => part.trim());
+  if (inParts.length > 1) {
+    return { degree: inParts[0], field: inParts.slice(1).join(" in ") };
+  }
+  return { degree: line.trim(), field: "" };
+}
+
+const parseEducationFallback = (educationText: string) => {
+  if (!educationText) return [];
+  const lines = normalizeSectionText(educationText)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const entries: {
+    school: string;
+    degree: string;
+    field: string;
+    startDate: string;
+    endDate: string;
+    notes: string;
+  }[] = [];
+
+  const isEducationNoise = (line: string) => {
+    const normalized = normalizeKey(line);
+    if (!normalized) return true;
+    if (normalized === "education") return true;
+    if (normalized.startsWith("show all")) return true;
+    return false;
+  };
+
+  let current: (typeof entries)[number] | null = null;
+  for (const line of lines) {
+    if (isEducationNoise(line)) continue;
+    if (EDUCATION_DATE_REGEX.test(line)) {
+      const { startDate, endDate } = parseEducationDateRange(line);
+      if (current && !current.startDate && startDate) {
+        current.startDate = startDate;
+        current.endDate = endDate;
+      }
+      continue;
+    }
+
+    if (!looksLikeDegreeLine(line) && !looksLikeLocation(line)) {
+      if (current?.school) entries.push(current);
+      current = {
+        school: line,
+        degree: "",
+        field: "",
+        startDate: "",
+        endDate: "",
+        notes: "",
+      };
+      continue;
+    }
+
+    if (!current) continue;
+    if (looksLikeDegreeLine(line)) {
+      const { degree, field } = splitDegreeField(line);
+      if (!current.degree) current.degree = degree;
+      if (!current.field && field) current.field = field;
+      continue;
+    }
+
+    if (!current.notes) current.notes = line;
+  }
+
+  if (current?.school) entries.push(current);
+
+  return dedupeByKey(entries, (item) => normalizeKey(item.school));
+};
+
+const parseLinksFallback = (profileText: string) => {
+  if (!profileText) return [];
+  const urlMatches = profileText.match(
+    /(https?:\/\/[^\s]+|www\.[^\s]+)/gi,
+  );
+  if (!urlMatches) return [];
+  const seen = new Set<string>();
+  return urlMatches
+    .map((url) => url.trim().replace(/[),.]+$/, ""))
+    .filter((url) => {
+      const normalized = url.toLowerCase();
+      if (!normalized || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    })
+    .map((url, index) => ({
+      id: `link-${index + 1}`,
+      label: "Website",
+      url: url.startsWith("http") ? url : `https://${url}`,
+    }));
 };
 
 const SECTION_MARKERS = [
@@ -334,6 +1074,68 @@ const buildPrompt = (rawText: string, url: string, maxChars: number) => {
     .join("\n\n");
 
   return [instructions, sections].join("\n");
+};
+
+const buildAlgorithmicPrompt = ({
+  seed,
+  url,
+  profileText,
+  experienceText,
+  educationText,
+  skillsText,
+  recommendationsText,
+  maxChars,
+}: {
+  seed: ScrapedProfile;
+  url: string;
+  profileText: string;
+  experienceText: string;
+  educationText: string;
+  skillsText: string;
+  recommendationsText: string;
+  maxChars: number;
+}) => {
+  const instructions = [
+    "You are normalizing a structured LinkedIn extraction.",
+    "Use ALGO_EXTRACT_JSON as the source of truth.",
+    "Only fill missing fields using RAW sections when provided.",
+    "Do not invent new roles, schools, or skills that are not in ALGO_EXTRACT_JSON or RAW sections.",
+    "Return ONLY valid JSON that matches this shape:",
+    '{ "profile": { "fullName": "", "headline": "", "targetRole": "", "jobField": "", "jobType": "", "email": "", "phone": "", "location": "", "website": "", "summary": "" }, "skills": [""] , "experiences": [ { "id": "exp-1", "title": "", "company": "", "location": "", "startDate": "", "endDate": "", "summary": "", "highlights": [""] } ], "education": [ { "id": "edu-1", "school": "", "degree": "", "field": "", "startDate": "", "endDate": "", "notes": "" } ], "links": [ { "id": "link-1", "label": "", "url": "" } ] }',
+    "Keep summaries and highlights exactly as given; only trim whitespace and remove duplicates.",
+    "Use ASCII only. Do not include markdown or commentary.",
+  ].join("\n");
+
+  const sections: string[] = [
+    `SOURCE_URL: ${url}`,
+    `ALGO_EXTRACT_JSON\n${JSON.stringify(seed)}`,
+  ];
+
+  const includeProfile =
+    !seed.profile?.fullName ||
+    !seed.profile?.headline ||
+    !seed.profile?.summary;
+  if (includeProfile && profileText) {
+    sections.push(buildSection("PROFILE_PAGE", profileText, maxChars));
+  }
+
+  if ((!seed.experiences || seed.experiences.length === 0) && experienceText) {
+    sections.push(buildSection("EXPERIENCE_DETAILS", experienceText, maxChars));
+  }
+
+  if ((!seed.education || seed.education.length === 0) && educationText) {
+    sections.push(buildSection("EDUCATION_DETAILS", educationText, maxChars));
+  }
+
+  // Skills are sourced only from SKILLS_ENDORSEMENTS_JSON.
+
+  if (recommendationsText) {
+    sections.push(
+      buildSection("RECOMMENDATIONS_DETAILS", recommendationsText, maxChars),
+    );
+  }
+
+  return [instructions, ...sections].join("\n\n");
 };
 
 const buildProfilePrompt = ({
@@ -712,6 +1514,9 @@ const parseSkillsFromDetails = (rawText: string) => {
     "add",
     "linkedin",
     "profile",
+    "industry knowledge",
+    "tools & technologies",
+    "tools and technologies",
   ];
 
   const lines = section
@@ -762,23 +1567,56 @@ const normalizeSkillsList = (value: unknown) => {
       : [];
 
   const mapped = normalizedList
-    .map((item) => {
-      if (typeof item === "string") return item.trim();
-      if (!item || typeof item !== "object") return "";
+    .map((item, index) => {
+      if (typeof item === "string") {
+        return { name: item.trim(), endorsements: undefined, index };
+      }
+      if (!item || typeof item !== "object") return null;
       const record = item as Record<string, unknown>;
-      if (typeof record.name === "string") return record.name.trim();
-      if (typeof record.skill === "string") return record.skill.trim();
-      return "";
+      const name =
+        typeof record.name === "string"
+          ? record.name.trim()
+          : typeof record.skill === "string"
+            ? record.skill.trim()
+            : "";
+      if (!name) return null;
+      const rawEndorsements =
+        typeof record.endorsements === "number"
+          ? record.endorsements
+          : typeof record.endorsements === "string"
+            ? Number.parseInt(record.endorsements, 10)
+            : undefined;
+      const endorsements =
+        typeof rawEndorsements === "number" && Number.isFinite(rawEndorsements)
+          ? rawEndorsements
+          : undefined;
+      return { name, endorsements, index };
     })
-    .filter(Boolean);
+    .filter(Boolean) as Array<{
+    name: string;
+    endorsements?: number;
+    index: number;
+  }>;
+
+  const hasEndorsements = mapped.some(
+    (item) => typeof item.endorsements === "number",
+  );
+  const sorted = hasEndorsements
+    ? [...mapped].sort((a, b) => {
+        const diff = (b.endorsements ?? 0) - (a.endorsements ?? 0);
+        return diff !== 0 ? diff : a.index - b.index;
+      })
+    : mapped;
 
   const seen = new Set<string>();
-  return mapped.filter((skill) => {
-    const key = skill.toLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return sorted
+    .map((item) => item.name)
+    .filter((skill) => {
+      const key = skill.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 };
 
 const normalizeHighlights = (value: unknown) => {
@@ -908,8 +1746,6 @@ const normalizeScrapedProfile = (value: unknown) => {
     links: normalizeLinks(record.links),
   };
 };
-
-const normalizeKey = (value: string) => value.trim().toLowerCase();
 
 const dedupeByKey = <T>(
   items: T[],
@@ -1066,6 +1902,31 @@ const SKILL_STOPWORDS = [
   "show all",
   "see all",
   "message",
+  "new feed updates",
+  "my network",
+  "jobs",
+  "messaging",
+  "notifications",
+  "for business",
+  "claim 1 free month",
+  "about",
+  "accessibility",
+  "talent solutions",
+  "professional community policies",
+  "careers",
+  "marketing solutions",
+  "privacy",
+  "terms",
+  "ad choices",
+  "advertising",
+  "sales solutions",
+  "mobile",
+  "small business",
+  "safety center",
+  "questions?",
+  "manage your account",
+  "recommendation transparency",
+  "view",
 ];
 
 const cleanSkills = (
@@ -1319,30 +2180,37 @@ const getProviderMeta = (payload: unknown) => {
 
 export const extractLinkedInProfile = async ({
   rawText,
+  rawHtml,
+  rawHtmlBySection,
+  rawDetails,
   url,
 }: {
   rawText: string;
+  rawHtml?: string;
+  rawHtmlBySection?: Record<string, string>;
+  rawDetails?: Record<string, unknown>;
   url: string;
 }): Promise<ScrapedProfile> => {
-  if (!env.EDENAI_API_KEY) {
-    throw new Error("EDENAI_API_KEY is required to normalize scraped data.");
-  }
-
   const maxPromptChars = env.EDENAI_MAX_PROMPT_CHARS ?? DEFAULT_PROMPT_LIMIT;
   const maxTokens = env.EDENAI_MAX_TOKENS ?? DEFAULT_MAX_TOKENS;
   const provider = env.EDENAI_PROVIDER ?? "openai";
   const model = env.EDENAI_MODEL ?? "gpt-4o";
   const markers = SECTION_MARKERS.filter((marker) => rawText.includes(marker));
-  const hasMarkers = markers.length > 0;
-  const sectionLimit = Math.min(maxPromptChars, 6500);
-  const experienceLimit = Math.min(maxPromptChars, 12000);
-  const tokenBudget = {
-    profile: Math.max(maxTokens, MIN_SECTION_TOKENS.profile),
-    experience: Math.max(maxTokens, MIN_SECTION_TOKENS.experience),
-    education: Math.max(maxTokens, MIN_SECTION_TOKENS.education),
-    skills: Math.max(maxTokens, MIN_SECTION_TOKENS.skills),
-    full: Math.max(maxTokens, MIN_SECTION_TOKENS.full),
+  const rawSectionLimit = Math.min(maxPromptChars, 5000);
+  const htmlContent = rawHtml?.trim() ?? "";
+  const detailHtml = rawHtmlBySection ?? {};
+  const details = (rawDetails ?? {}) as {
+    profile?: Record<string, unknown>;
+    experiences?: Array<Record<string, unknown>>;
+    education?: Array<Record<string, unknown>>;
+    skills?: Array<Record<string, unknown>>;
+    recommendations?: string[] | string;
   };
+  const experienceHtml = detailHtml.experience ?? htmlContent;
+  const educationHtml = detailHtml.education ?? "";
+  const skillsHtml = detailHtml.skills ?? "";
+  const recommendationsHtml = detailHtml.recommendations ?? "";
+  const tokenBudget = Math.max(maxTokens, MIN_SECTION_TOKENS.full);
 
   void logAiEvent({
     level: "debug",
@@ -1351,149 +2219,229 @@ export const extractLinkedInProfile = async ({
     model,
     request: {
       rawTextLength: rawText.length,
+      rawHtmlLength: htmlContent.length,
+      detailHtmlLengths: {
+        experience: experienceHtml.length,
+        education: educationHtml.length,
+        skills: skillsHtml.length,
+        recommendations: recommendationsHtml.length,
+      },
       maxPromptChars,
       maxTokens,
-      tokenBudget,
+      tokenBudget: { full: tokenBudget },
       markers,
     },
   });
 
-  let collected: ScrapedProfile = {};
+  const experienceText = normalizeSectionText(
+    extractSection(rawText, "EXPERIENCE_DETAILS"),
+  );
+  const educationText = normalizeSectionText(
+    extractSection(rawText, "EDUCATION_DETAILS"),
+  );
+  const skillsText = normalizeSectionText(
+    extractSection(rawText, "SKILLS_DETAILS"),
+  );
+  const recommendationsText = normalizeSectionText(
+    extractSection(rawText, "RECOMMENDATIONS_DETAILS"),
+  );
+  const profileText = normalizeSectionText(
+    extractSection(rawText, "PROFILE_PAGE"),
+  );
+  const skillsJson = extractMarkerLine(rawText, "SKILLS_ENDORSEMENTS_JSON");
 
-  if (hasMarkers) {
-    const experienceText = normalizeSectionText(
-      extractSection(rawText, "EXPERIENCE_DETAILS"),
-    );
-    const educationText = normalizeSectionText(
-      extractSection(rawText, "EDUCATION_DETAILS"),
-    );
-    const skillsText = normalizeSectionText(
-      extractSection(rawText, "SKILLS_DETAILS"),
-    );
-    const recommendationsText = normalizeSectionText(
-      extractSection(rawText, "RECOMMENDATIONS_DETAILS"),
-    );
-    const profileText = normalizeSectionText(
-      extractSection(rawText, "PROFILE_PAGE"),
-    );
-    const experienceSource = experienceText || profileText;
-    const educationSource = educationText || profileText;
-    const skillsSource = skillsText || profileText;
-    const skillsJson = extractMarkerLine(rawText, "SKILLS_ENDORSEMENTS_JSON");
+  const htmlExperiences =
+    experienceHtml && experienceHtml.includes("EXPERIENCE")
+      ? parseExperienceFromHtml(experienceHtml)
+      : [];
+  const htmlEducation = educationHtml
+    ? parseEducationFromHtml(educationHtml)
+    : [];
+  const htmlSkills = skillsHtml ? parseSkillsFromHtml(skillsHtml) : [];
+  const htmlRecommendations = recommendationsHtml
+    ? parseRecommendationsFromHtml(recommendationsHtml)
+    : "";
+  const htmlProfile = htmlContent ? parseProfileFromHtml(htmlContent) : undefined;
+  const htmlTextFallback = htmlContent ? htmlToText(htmlContent) : "";
 
-    void logAiEvent({
-      level: "debug",
-      operation: "linkedin_extract_sections",
-      provider,
-      model,
-      meta: {
-        experienceLength: experienceText.length,
-        educationLength: educationText.length,
-        skillsLength: skillsText.length,
-        recommendationsLength: recommendationsText.length,
-        profileLength: profileText.length,
-        skillsJsonLength: skillsJson.length,
-      },
-    });
+  void logAiEvent({
+    level: "debug",
+    operation: "linkedin_extract_sections",
+    provider,
+    model,
+    meta: {
+      experienceLength: experienceText.length,
+      educationLength: educationText.length,
+      skillsLength: skillsText.length,
+      recommendationsLength: recommendationsText.length,
+      profileLength: profileText.length,
+      skillsJsonLength: skillsJson.length,
+      htmlExperienceCount: htmlExperiences.length,
+      htmlEducationCount: htmlEducation.length,
+      htmlSkillsCount: htmlSkills.length,
+      htmlRecommendationsLength: htmlRecommendations.length,
+    },
+  });
 
-    if (profileText || recommendationsText) {
-      const prompt = buildProfilePrompt({
-        profileText,
-        recommendationsText,
-        url,
-        maxChars: sectionLimit,
-      });
-      const result = await callEdenSection({
-        operation: "linkedin_extract_profile",
-        prompt,
-        provider,
-        model,
-        maxTokens: tokenBudget.profile,
-      });
-      if (result) collected = mergeScrapedProfiles(collected, result);
-    }
+  const experienceSource =
+    experienceText || profileText || rawText || htmlTextFallback;
+  const educationSource =
+    educationText || profileText || rawText || htmlTextFallback;
+  const profileSource = profileText || rawText || htmlTextFallback;
+  const recommendationSource =
+    (Array.isArray(details.recommendations)
+      ? details.recommendations.join("\n")
+      : typeof details.recommendations === "string"
+        ? details.recommendations
+        : "") ||
+    htmlRecommendations ||
+    recommendationsText;
 
-    if (experienceSource) {
-      const prompt = buildExperiencePrompt({
-        experienceText: experienceSource,
-        url,
-        maxChars: experienceLimit,
-      });
-      const result = await callEdenSection({
-        operation: "linkedin_extract_experience",
-        prompt,
-        provider,
-        model,
-        maxTokens: tokenBudget.experience,
-      });
-      if (result) collected = mergeScrapedProfiles(collected, result);
-    }
+  const mergedProfile = mergeProfiles(
+    { profile: details.profile ?? htmlProfile },
+    { profile: parseProfileFallback(profileSource) },
+  );
+  const candidateProfile = normalizeProfile(mergedProfile);
+  const fallbackProfile = parseProfileFallback(profileSource);
+  const chooseLonger = (a?: string, b?: string) => {
+    const aValue = a?.trim() ?? "";
+    const bValue = b?.trim() ?? "";
+    if (!aValue) return bValue;
+    if (!bValue) return aValue;
+    return bValue.length > aValue.length ? bValue : aValue;
+  };
+  const algorithmicProfile = candidateProfile
+    ? {
+        ...candidateProfile,
+        summary: chooseLonger(candidateProfile.summary, fallbackProfile?.summary),
+      }
+    : fallbackProfile;
+  const rawDetailExperiences =
+    Array.isArray(details.experiences) && details.experiences.length > 0
+      ? details.experiences
+      : null;
+  const algorithmicExperiences = (
+    rawDetailExperiences
+      ? rawDetailExperiences
+      : htmlExperiences.length > 0
+        ? htmlExperiences
+        : parseExperienceFallback(experienceSource)
+  ).map((item, index) => ({
+    id:
+      typeof item.id === "string" && item.id.trim()
+        ? item.id
+        : `exp-${index + 1}`,
+    title: typeof item.title === "string" ? item.title : "",
+    company: typeof item.company === "string" ? item.company : "",
+    location: typeof item.location === "string" ? item.location : "",
+    startDate: typeof item.startDate === "string" ? item.startDate : "",
+    endDate: typeof item.endDate === "string" ? item.endDate : "",
+    summary: typeof item.summary === "string" ? item.summary : "",
+    highlights: Array.isArray(item.highlights)
+      ? item.highlights.filter((value) => typeof value === "string")
+      : [],
+  }));
+  const algorithmicEducation = (
+    Array.isArray(details.education) && details.education.length > 0
+      ? details.education
+      : htmlEducation.length > 0
+        ? htmlEducation
+        : parseEducationFallback(educationSource)
+  ).map((item, index) => ({
+    id:
+      typeof item.id === "string" && item.id.trim()
+        ? item.id
+        : `edu-${index + 1}`,
+    school: typeof item.school === "string" ? item.school : "",
+    degree: typeof item.degree === "string" ? item.degree : "",
+    field: typeof item.field === "string" ? item.field : "",
+    startDate: typeof item.startDate === "string" ? item.startDate : "",
+    endDate: typeof item.endDate === "string" ? item.endDate : "",
+    notes: typeof item.notes === "string" ? item.notes : "",
+  }));
+  const jsonSkills =
+    Array.isArray(details.skills) && details.skills.length > 0
+      ? normalizeSkillsList(details.skills)
+      : parseSkillsFallback(rawText);
+  const algorithmicSkills = jsonSkills;
+  const algorithmicLinks = parseLinksFallback(profileSource);
 
-    if (educationSource) {
-      const prompt = buildEducationPrompt({
-        educationText: educationSource,
-        url,
-        maxChars: sectionLimit,
-      });
-      const result = await callEdenSection({
-        operation: "linkedin_extract_education",
-        prompt,
-        provider,
-        model,
-        maxTokens: tokenBudget.education,
-      });
-      if (result) collected = mergeScrapedProfiles(collected, result);
-    }
+  let collected: ScrapedProfile = {
+    profile: algorithmicProfile,
+    experiences: algorithmicExperiences.length
+      ? algorithmicExperiences
+      : undefined,
+    education: algorithmicEducation.length ? algorithmicEducation : undefined,
+    skills: algorithmicSkills.length ? algorithmicSkills : undefined,
+    links: algorithmicLinks.length ? algorithmicLinks : undefined,
+  };
 
-    if (skillsSource || skillsJson || experienceSource) {
-      const prompt = buildSkillsPrompt({
-        skillsText: skillsSource,
-        skillsJson,
-        experienceText: experienceSource,
-        url,
-        maxChars: sectionLimit,
-      });
-      const result = await callEdenSection({
-        operation: "linkedin_extract_skills",
-        prompt,
-        provider,
-        model,
-        maxTokens: tokenBudget.skills,
-      });
-      if (result) collected = mergeScrapedProfiles(collected, result);
-    }
-  } else {
-    const prompt = buildPrompt(rawText, url, maxPromptChars);
+  void logAiEvent({
+    level: "debug",
+    operation: "linkedin_extract_algorithmic",
+    provider,
+    model,
+    meta: {
+      hasProfile: Boolean(collected.profile?.fullName),
+      experienceCount: algorithmicExperiences.length,
+      educationCount: algorithmicEducation.length,
+      skillsCount: algorithmicSkills.length,
+      linksCount: algorithmicLinks.length,
+    },
+  });
+
+  const algoEmpty =
+    !collected.profile &&
+    !(collected.experiences && collected.experiences.length > 0) &&
+    !(collected.education && collected.education.length > 0) &&
+    !(collected.skills && collected.skills.length > 0);
+
+  if (env.EDENAI_API_KEY) {
+    const prompt = algoEmpty
+      ? buildPrompt(rawText, url, maxPromptChars)
+      : buildAlgorithmicPrompt({
+          seed: collected,
+          url,
+          profileText: profileSource,
+          experienceText,
+          educationText,
+          skillsText,
+          recommendationsText: recommendationSource,
+          maxChars: rawSectionLimit,
+        });
     const result = await callEdenSection({
-      operation: "linkedin_extract_full",
+      operation: algoEmpty ? "linkedin_extract_full" : "linkedin_structure",
       prompt,
       provider,
       model,
-      maxTokens: tokenBudget.full,
+      maxTokens: tokenBudget,
     });
-    if (result) collected = mergeScrapedProfiles(collected, result);
+    if (result) {
+      collected = mergeScrapedProfiles(collected, result);
+    }
   }
 
-  const fallbackExperienceText = normalizeSectionText(
-    extractSection(rawText, "EXPERIENCE_DETAILS") ||
-      extractSection(rawText, "PROFILE_PAGE") ||
-      rawText,
-  );
-  const fallbackExperiences = parseExperienceFallback(fallbackExperienceText);
-  if (fallbackExperiences.length > 0) {
-    collected.experiences = mergeExperienceDetails(
-      collected.experiences ?? [],
-      fallbackExperiences,
-    );
+  if (jsonSkills.length > 0) {
+    collected.skills = jsonSkills;
+  } else {
+    collected.skills = [];
   }
 
-  const fallbackSkills = mergeSkills(
-    parseSkillsFallback(rawText),
-    parseSkillsFromDetails(rawText),
-  );
+  if (algorithmicExperiences.length > 0) {
+    collected.experiences = algorithmicExperiences;
+  }
+
+  if (algorithmicEducation.length > 0) {
+    collected.education = algorithmicEducation;
+  }
+
+  if (algorithmicLinks.length > 0) {
+    collected.links = mergeLinks(algorithmicLinks, collected.links ?? []);
+  }
+
   const mergedSkills =
-    fallbackSkills.length > 0
-      ? mergeSkills(fallbackSkills, collected.skills ?? [])
+    algorithmicSkills.length > 0
+      ? mergeSkills(algorithmicSkills, collected.skills ?? [])
       : collected.skills ?? [];
   const cleanedSkills = cleanSkills(mergedSkills, collected);
   const finalSkills =
