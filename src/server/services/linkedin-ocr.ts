@@ -21,12 +21,14 @@ const decodeXmlEntities = (value: string) =>
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-fA-F]+);/g, (_match, hex) =>
-      String.fromCodePoint(Number.parseInt(hex, 16)),
-    )
-    .replace(/&#(\d+);/g, (_match, code) =>
-      String.fromCodePoint(Number.parseInt(code, 10)),
-    );
+    .replace(/&#x([0-9a-fA-F]+);/g, (_match: string, hex: string) => {
+      const safeHex = typeof hex === "string" ? hex : "";
+      return String.fromCodePoint(Number.parseInt(safeHex, 16));
+    })
+    .replace(/&#(\d+);/g, (_match: string, code: string) => {
+      const safeCode = typeof code === "string" ? code : "";
+      return String.fromCodePoint(Number.parseInt(safeCode, 10));
+    });
 
 const extractTextFromOdt = async (buffer: Buffer) => {
   const zip = await JSZip.loadAsync(buffer);
@@ -81,7 +83,8 @@ const extractTextFromProvider = (provider: Record<string, unknown>) => {
 
   if (Array.isArray(provider.text)) {
     const lines = provider.text.filter(
-      (line): line is string => typeof line === "string" && line.trim(),
+      (line): line is string =>
+        typeof line === "string" && Boolean(line.trim()),
     );
     if (lines.length > 0) return lines.join("\n");
   }
@@ -158,7 +161,7 @@ const callOcr = async (buffer: Buffer, file: File) => {
   formData.append("language", "en");
   formData.append(
     "file",
-    new Blob([buffer], {
+    new Blob([new Uint8Array(buffer)], {
       type: file.type || "application/octet-stream",
     }),
     file.name || "resume",
@@ -217,7 +220,7 @@ const callOcr = async (buffer: Buffer, file: File) => {
     throw new Error("Eden AI OCR returned an empty response.");
   }
 
-  const providerKey = providers.split(",")[0]?.trim() || DEFAULT_OCR_PROVIDER;
+  const providerKey = providers.split(",")[0]?.trim() ?? DEFAULT_OCR_PROVIDER;
   const text = readProviderText(data, providerKey);
   if (!text) {
     throw new Error(

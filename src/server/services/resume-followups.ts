@@ -81,7 +81,8 @@ const buildHeuristicQuestions = (
       key: "latest_role_impact",
       label: `What measurable impact did you deliver at ${latestExperience.company || "your last role"}?`,
       inputType: "textarea",
-      placeholder: "Example: Reduced churn by 12% through a retention initiative.",
+      placeholder:
+        "Example: Reduced churn by 12% through a retention initiative.",
     });
   }
 
@@ -152,7 +153,8 @@ const buildHeuristicQuestions = (
 
   const draftEducationKeys = new Set(
     draft.education.map(
-      (item) => `${item.school.toLowerCase()}::${(item.degree ?? "").toLowerCase()}`,
+      (item) =>
+        `${item.school.toLowerCase()}::${(item.degree ?? "").toLowerCase()}`,
     ),
   );
   const missingEducation = (scraped?.education ?? []).filter((item) => {
@@ -166,6 +168,83 @@ const buildHeuristicQuestions = (
       inputType: "textarea",
       placeholder: "Optional: degree, honors, or focus area.",
       prefill: item.degree ?? "",
+    });
+  });
+
+  const draftCertKeys = new Set(
+    draft.certifications.map(
+      (item) =>
+        `${item.name.toLowerCase()}::${(item.issuer ?? "").toLowerCase()}`,
+    ),
+  );
+  const missingCerts = (scraped?.certifications ?? []).filter((item) => {
+    const key = `${item.name.toLowerCase()}::${(item.issuer ?? "").toLowerCase()}`;
+    return item.name && !draftCertKeys.has(key);
+  });
+  missingCerts.slice(0, 1).forEach((item, index) => {
+    questions.push({
+      key: `scraped_certification_${index + 1}`,
+      label: `We found ${item.name}. Add any certification details you want included.`,
+      inputType: "textarea",
+      placeholder: "Optional: issuer, dates, credential ID.",
+      prefill: item.issuer ?? "",
+    });
+  });
+
+  const draftHonorKeys = new Set(
+    draft.honors.map(
+      (item) =>
+        `${item.title.toLowerCase()}::${(item.issuer ?? "").toLowerCase()}`,
+    ),
+  );
+  const missingHonors = (scraped?.honors ?? []).filter((item) => {
+    const key = `${item.title.toLowerCase()}::${(item.issuer ?? "").toLowerCase()}`;
+    return item.title && !draftHonorKeys.has(key);
+  });
+  missingHonors.slice(0, 1).forEach((item, index) => {
+    questions.push({
+      key: `scraped_honor_${index + 1}`,
+      label: `We found the honor ${item.title}. Add a note if you want it listed.`,
+      inputType: "textarea",
+      placeholder: "Optional: issuer, date, or context.",
+      prefill: item.issuer ?? "",
+    });
+  });
+
+  const draftVolunteerKeys = new Set(
+    draft.volunteering.map(
+      (item) =>
+        `${item.role.toLowerCase()}::${(item.organization ?? "").toLowerCase()}`,
+    ),
+  );
+  const missingVolunteering = (scraped?.volunteering ?? []).filter((item) => {
+    const key = `${item.role.toLowerCase()}::${(item.organization ?? "").toLowerCase()}`;
+    return item.role && !draftVolunteerKeys.has(key);
+  });
+  missingVolunteering.slice(0, 1).forEach((item, index) => {
+    questions.push({
+      key: `scraped_volunteering_${index + 1}`,
+      label: `We found a volunteer role ${item.role}. Add a brief summary if you want it included.`,
+      inputType: "textarea",
+      placeholder: "Optional: impact, cause, or outcomes.",
+      prefill: item.summary ?? "",
+    });
+  });
+
+  const draftServiceKeys = new Set(
+    draft.services.map((item) => item.name.toLowerCase()),
+  );
+  const missingServices = (scraped?.services ?? []).filter((item) => {
+    const key = item.name.toLowerCase();
+    return item.name && !draftServiceKeys.has(key);
+  });
+  missingServices.slice(0, 1).forEach((item, index) => {
+    questions.push({
+      key: `scraped_service_${index + 1}`,
+      label: `We found a service called ${item.name}. Add details if you want it listed.`,
+      inputType: "textarea",
+      placeholder: "Optional: scope, deliverables, or pricing.",
+      prefill: item.description ?? "",
     });
   });
 
@@ -219,10 +298,7 @@ const trimToLimit = (text: string, limit: number) => {
   return `${head}\n...\n${tail}`;
 };
 
-const extractTextFromPayload = (
-  payload: unknown,
-  depth = 0,
-): string | null => {
+const extractTextFromPayload = (payload: unknown, depth = 0): string | null => {
   if (!payload || depth > 4) return null;
   if (typeof payload === "string") return payload;
   if (Array.isArray(payload)) {
@@ -277,8 +353,7 @@ const readProviderError = (payload: unknown) => {
     const errorRecord = errorValue as Record<string, unknown>;
     const message =
       typeof errorRecord.message === "string" ? errorRecord.message : null;
-    const type =
-      typeof errorRecord.type === "string" ? errorRecord.type : null;
+    const type = typeof errorRecord.type === "string" ? errorRecord.type : null;
     if (message && type) return `${type}: ${message}`;
     if (message) return message;
     if (type) return type;
@@ -310,7 +385,7 @@ const extractJsonCandidates = (text: string) => {
   if (!trimmed) return [];
 
   const candidates: string[] = [];
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fenceMatch = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
   if (fenceMatch?.[1]) {
     candidates.push(fenceMatch[1].trim());
   }
@@ -342,9 +417,7 @@ const parseAiQuestions = (text: string): FollowupQuestion[] | null => {
   for (const candidate of extractJsonCandidates(text)) {
     const parsed = tryParseJson(candidate);
     if (!parsed) continue;
-    const normalized = Array.isArray(parsed)
-      ? { questions: parsed }
-      : parsed;
+    const normalized = Array.isArray(parsed) ? { questions: parsed } : parsed;
     const validated = followupResponseSchema.safeParse(normalized);
     if (validated.success) {
       return validated.data.questions;

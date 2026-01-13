@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import cors from "cors";
 import express from "express";
+import type { BrowserContext } from "playwright";
 import { z } from "zod";
 
 import { checkLinkedInAuth, type AuthCheckResult } from "./auth-check";
@@ -17,8 +18,14 @@ import type { ScrapeRequest } from "./types";
 const app = express();
 const port = Number.parseInt(process.env.SCRAPER_PORT ?? "5150", 10);
 const concurrency = Number.parseInt(process.env.SCRAPER_CONCURRENCY ?? "2", 10);
-const queueLimit = Number.parseInt(process.env.SCRAPER_QUEUE_LIMIT ?? "200", 10);
-const jobTtlMs = Number.parseInt(process.env.SCRAPER_JOB_TTL_MS ?? "3600000", 10);
+const queueLimit = Number.parseInt(
+  process.env.SCRAPER_QUEUE_LIMIT ?? "200",
+  10,
+);
+const jobTtlMs = Number.parseInt(
+  process.env.SCRAPER_JOB_TTL_MS ?? "3600000",
+  10,
+);
 const screenshotDir = process.env.SCRAPER_SCREENSHOT_DIR
   ? resolve(process.env.SCRAPER_SCREENSHOT_DIR)
   : null;
@@ -212,9 +219,11 @@ app.post("/auth/session", async (req, res) => {
     try {
       const state =
         typeof storageState === "string"
-          ? (JSON.parse(storageState) as Record<string, unknown>)
-          : (storageState as Record<string, unknown>);
-      await saveStorageState(state);
+          ? JSON.parse(storageState)
+          : storageState;
+      await saveStorageState(
+        state as Awaited<ReturnType<BrowserContext["storageState"]>>,
+      );
       res.json({ ok: true, source: "storageState" });
       return;
     } catch {
@@ -230,9 +239,10 @@ app.post("/auth/session", async (req, res) => {
           value: liAt,
           domain: ".linkedin.com",
           path: "/",
+          expires: -1,
           httpOnly: true,
           secure: true,
-          sameSite: "Lax",
+          sameSite: "Lax" as const,
         }
       : null,
     jsessionId
@@ -241,12 +251,13 @@ app.post("/auth/session", async (req, res) => {
           value: jsessionId,
           domain: ".linkedin.com",
           path: "/",
+          expires: -1,
           httpOnly: true,
           secure: true,
-          sameSite: "Lax",
+          sameSite: "Lax" as const,
         }
       : null,
-  ].filter(Boolean);
+  ].filter((c): c is NonNullable<typeof c> => c !== null);
 
   await saveStorageState({
     cookies,

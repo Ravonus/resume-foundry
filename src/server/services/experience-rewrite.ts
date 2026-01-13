@@ -20,7 +20,7 @@ const extractJsonCandidates = (text: string) => {
   const trimmed = text.trim();
   if (!trimmed) return [];
   const candidates: string[] = [];
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fenceMatch = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
   if (fenceMatch?.[1]) {
     candidates.push(fenceMatch[1].trim());
   }
@@ -117,7 +117,8 @@ const buildPrompt = ({
     '{ "summary": "", "highlights": [""] }',
     "Summary should be 1-3 tight sentences.",
     "Highlights should be 3-6 bullets, action-led, concise.",
-    "Use ASCII only. No markdown or extra commentary.",
+    "Use ASCII only. Markdown is allowed for inline emphasis in the summary.",
+    "Do not use headings, tables, or code fences.",
     prompt ? `USER_PROMPT: ${prompt}` : "",
     `EXPERIENCE: ${JSON.stringify(experiencePayload)}`,
     profilePayload ? `PROFILE_HINTS: ${JSON.stringify(profilePayload)}` : "",
@@ -191,7 +192,7 @@ export const rewriteExperienceEntry = async ({
       .map((value) => extractTextFromPayload(value))
       .find((value) => value);
 
-  if (!rawText) {
+  if (typeof rawText !== "string" || !rawText.trim()) {
     throw new Error("AI response was empty.");
   }
 

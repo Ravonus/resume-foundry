@@ -33,7 +33,7 @@ const extractJsonCandidates = (text: string) => {
   const trimmed = text.trim();
   if (!trimmed) return [];
   const candidates: string[] = [];
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fenceMatch = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
   if (fenceMatch?.[1]) {
     candidates.push(fenceMatch[1].trim());
   }
@@ -144,7 +144,8 @@ const buildPrompt = ({
     "Avoid repeating sentences. Remove duplicate ideas.",
     "If a summary or highlights list is empty, return an empty string or empty array.",
     "Do not copy sentences verbatim from the input.",
-    "Use ASCII only. No markdown headings or backticks.",
+    "Use ASCII only. Markdown is allowed for bullets and inline emphasis.",
+    "Do not use headings, tables, or code fences.",
     prompt ? `USER_PROMPT: ${prompt}` : "",
     `DRAFT: ${JSON.stringify(draftPayload)}`,
     scrapedPayload ? `SCRAPED_HINTS: ${JSON.stringify(scrapedPayload)}` : "",
@@ -216,7 +217,7 @@ export const polishResumeDraft = async ({
       .map((value) => extractTextFromPayload(value))
       .find((value) => value);
 
-  if (!rawText) return draft;
+  if (typeof rawText !== "string" || !rawText.trim()) return draft;
 
   let parsed: unknown = null;
   for (const candidate of extractJsonCandidates(rawText)) {
@@ -257,7 +258,7 @@ export const polishResumeDraft = async ({
     if (!next) return exp;
     return {
       ...exp,
-      summary: next.summary?.trim() || exp.summary,
+      summary: next.summary?.trim() ?? exp.summary,
       highlights:
         next.highlights && next.highlights.length > 0
           ? next.highlights.filter(Boolean)

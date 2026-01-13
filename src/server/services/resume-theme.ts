@@ -72,7 +72,7 @@ const extractJsonCandidates = (text: string) => {
   const trimmed = text.trim();
   if (!trimmed) return [];
   const candidates: string[] = [];
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fenceMatch = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
   if (fenceMatch?.[1]) {
     candidates.push(fenceMatch[1].trim());
   }
@@ -222,7 +222,9 @@ export const resolveResumeTheme = async (
       .map((value) => extractTextFromPayload(value))
       .find((value) => value);
 
-  if (!rawText) return DEFAULT_RESUME_THEME;
+  if (typeof rawText !== "string" || !rawText.trim()) {
+    return DEFAULT_RESUME_THEME;
+  }
 
   let parsed: Record<string, unknown> | null = null;
   for (const candidate of extractJsonCandidates(rawText)) {

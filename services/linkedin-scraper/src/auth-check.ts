@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium, type BrowserContextOptions } from "playwright";
 
 import { isAuthWall } from "./auth-wall";
 import { loadStorageState } from "./storage-state";
@@ -20,7 +20,7 @@ export const checkLinkedInAuth = async (): Promise<AuthCheckResult> => {
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext({
-      storageState,
+      storageState: storageState as BrowserContextOptions["storageState"],
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
       locale: "en-US",

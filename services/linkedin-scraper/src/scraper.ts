@@ -1,7 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { chromium, type BrowserContext } from "playwright";
+import {
+  chromium,
+  type BrowserContext,
+  type BrowserContextOptions,
+} from "playwright";
 
 import { isAuthWall } from "./auth-wall";
 import { loadStorageState } from "./storage-state";
@@ -10,8 +14,10 @@ import type { ScrapeOptions, ScrapeResult } from "./types";
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
-const applyStealth = async (page: { addInitScript: (fn: () => void) => void }) => {
-  await page.addInitScript(() => {
+const applyStealth = async (page: {
+  addInitScript: (fn: () => void) => void;
+}) => {
+  page.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", {
       get: () => false,
     });
@@ -46,7 +52,9 @@ const expandTextBlocks = async (page: {
     for (const element of clickable) {
       const text = element.innerText?.toLowerCase() ?? "";
       const aria = element.getAttribute("aria-label")?.toLowerCase() ?? "";
-      if (labels.some((label) => text.includes(label) || aria.includes(label))) {
+      if (
+        labels.some((label) => text.includes(label) || aria.includes(label))
+      ) {
         element.click();
       }
     }
@@ -61,7 +69,7 @@ const extractSkillItems = async (page: {
       return value.replace(/\s+/g, " ").trim();
     }
     function parseEndorsements(value: string) {
-      const match = value.replace(/,/g, "").match(/\d+/);
+      const match = /\d+/.exec(value.replace(/,/g, ""));
       if (!match) return null;
       const parsed = Number.parseInt(match[0] ?? "0", 10);
       return Number.isFinite(parsed) ? parsed : null;
@@ -109,8 +117,10 @@ const extractSkillItems = async (page: {
     const topLevelItems = Array.from(
       scaffold.querySelectorAll("li.pvs-list__paged-list-item"),
     ).filter((item) => {
-      if (item.id && item.id.toLowerCase().includes("skills")) return true;
-      return Boolean(item.querySelector("a[data-field='skill_page_skill_topic']"));
+      if (item.id?.toLowerCase().includes("skills")) return true;
+      return Boolean(
+        item.querySelector("a[data-field='skill_page_skill_topic']"),
+      );
     });
 
     const items =
@@ -133,9 +143,9 @@ const extractSkillItems = async (page: {
       if (isCategoryHeading(name)) continue;
 
       const itemText = item.textContent ?? "";
-      const endorsementMatch = itemText
-        .replace(/,/g, "")
-        .match(/(\d+)\s+endorsements?/i);
+      const endorsementMatch = /(\d+)\s+endorsements?/i.exec(
+        itemText.replace(/,/g, ""),
+      );
       const endorsements = endorsementMatch
         ? parseEndorsements(endorsementMatch[1] ?? "")
         : null;
@@ -154,9 +164,8 @@ const extractProfileDetails = async (page: {
       return (value ?? "").trim();
     }
     const name =
-      text(
-        document.querySelector("h1.text-heading-xlarge")?.textContent,
-      ) || text(document.querySelector("h1")?.textContent);
+      text(document.querySelector("h1.text-heading-xlarge")?.textContent) ||
+      text(document.querySelector("h1")?.textContent);
     const headline = text(
       document.querySelector(".text-body-medium")?.textContent,
     );
@@ -179,9 +188,7 @@ const extractProfileDetails = async (page: {
       return heading.includes("about");
     });
     if (aboutSection) {
-      const raw = text(
-        (aboutSection as HTMLElement).innerText || aboutSection.textContent,
-      );
+      const raw = text(aboutSection.innerText || aboutSection.textContent);
       const lines = raw
         .split("\n")
         .map((line) => line.trim())
@@ -213,17 +220,16 @@ const extractExperienceDetails = async (page: {
     const nodes =
       items.length > 0
         ? items
-        : Array.from(
-            document.querySelectorAll("li.pvs-list__paged-list-item"),
-          );
+        : Array.from(document.querySelectorAll("li.pvs-list__paged-list-item"));
 
     function normalize(value: string) {
       return value.replace(/\s+/g, " ").trim();
     }
     function parseDateRange(value: string) {
-      const match = value.match(
-        /(\b[A-Za-z]{3,9}\s+\d{4})\s*(?:-|to)\s*(Present|[A-Za-z]{3,9}\s+\d{4})/i,
-      );
+      const match =
+        /(\b[A-Za-z]{3,9}\s+\d{4})\s*(?:-|to)\s*(Present|[A-Za-z]{3,9}\s+\d{4})/i.exec(
+          value,
+        );
       if (!match) return { startDate: "", endDate: "" };
       return { startDate: match[1] ?? "", endDate: match[2] ?? "" };
     }
@@ -231,13 +237,11 @@ const extractExperienceDetails = async (page: {
     const rows = nodes
       .map((item) => {
         const title = normalize(
-          item
-            .querySelector(".t-bold span[aria-hidden='true']")
-            ?.textContent ?? "",
+          item.querySelector(".t-bold span[aria-hidden='true']")?.textContent ??
+            "",
         );
         const companyLine = normalize(
-          item
-            .querySelector("span.t-14.t-normal span[aria-hidden='true']")
+          item.querySelector("span.t-14.t-normal span[aria-hidden='true']")
             ?.textContent ?? "",
         );
         const company = companyLine.split("·")[0]?.trim() ?? "";
@@ -255,7 +259,7 @@ const extractExperienceDetails = async (page: {
           .map((el) => normalize(el.textContent ?? ""))
           .filter(Boolean);
         const location =
-          locationCandidates.find((value) => !value.match(/\b\d{4}\b/)) ?? "";
+          locationCandidates.find((value) => !/\b\d{4}\b/.exec(value)) ?? "";
 
         const scopedBlocks = Array.from(
           item.querySelectorAll(
@@ -308,9 +312,10 @@ const extractExperienceDetails = async (page: {
 
     const seen = new Set<string>();
     return rows.filter((item) => {
-      const key = `${item.title}|${item.company}|${item.startDate}|${item.endDate}`
-        .toLowerCase()
-        .trim();
+      const key =
+        `${item.title}|${item.company}|${item.startDate}|${item.endDate}`
+          .toLowerCase()
+          .trim();
       if (!key || key === "|||") return true;
       if (seen.has(key)) return false;
       seen.add(key);
@@ -327,14 +332,12 @@ const extractEducationDetails = async (page: {
     const nodes =
       items.length > 0
         ? items
-        : Array.from(
-            document.querySelectorAll("li.pvs-list__paged-list-item"),
-          );
+        : Array.from(document.querySelectorAll("li.pvs-list__paged-list-item"));
     function normalize(value: string) {
       return value.replace(/\s+/g, " ").trim();
     }
     function parseDateRange(value: string) {
-      const match = value.match(/(\b\d{4})\s*(?:-|to)\s*(Present|\d{4})/i);
+      const match = /(\b\d{4})\s*(?:-|to)\s*(Present|\d{4})/i.exec(value);
       if (!match) return { startDate: "", endDate: "" };
       return { startDate: match[1] ?? "", endDate: match[2] ?? "" };
     }
@@ -342,17 +345,15 @@ const extractEducationDetails = async (page: {
     return nodes
       .map((item) => {
         const school = normalize(
-          item
-            .querySelector(".t-bold span[aria-hidden='true']")
-            ?.textContent ?? "",
+          item.querySelector(".t-bold span[aria-hidden='true']")?.textContent ??
+            "",
         );
         const detailLines = Array.from(
           item.querySelectorAll("span.t-14.t-normal span[aria-hidden='true']"),
         )
           .map((el) => normalize(el.textContent ?? ""))
           .filter(Boolean);
-        const degreeLine =
-          detailLines.find((line) => line !== school) ?? "";
+        const degreeLine = detailLines.find((line) => line !== school) ?? "";
         const dateLine = normalize(
           item.querySelector(".pvs-entity__caption-wrapper")?.textContent ?? "",
         );
@@ -360,8 +361,8 @@ const extractEducationDetails = async (page: {
 
         const notesBlock = item.querySelector("div.t-14.t-normal.t-black");
         const notes = normalize(
-          (notesBlock as HTMLElement | null)?.innerText ||
-            notesBlock?.textContent ||
+          (notesBlock as HTMLElement | null)?.innerText ??
+            notesBlock?.textContent ??
             "",
         );
 
@@ -376,6 +377,501 @@ const extractEducationDetails = async (page: {
         };
       })
       .filter((item) => item.school);
+  });
+};
+
+const extractProjectDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const items = Array.from(document.querySelectorAll('li[id*="PROJECT"]'));
+    const nodes =
+      items.length > 0
+        ? items
+        : Array.from(document.querySelectorAll("li.pvs-list__paged-list-item"));
+
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+
+    function parseDateRange(value: string) {
+      const match =
+        /(\b[A-Za-z]{3,9}\s+\d{4}|\b\d{4})\s*(?:-|to)\s*(Present|[A-Za-z]{3,9}\s+\d{4}|\d{4})/i.exec(
+          value,
+        );
+      if (!match) return { startDate: "", endDate: "" };
+      return { startDate: match[1] ?? "", endDate: match[2] ?? "" };
+    }
+
+    const rows = nodes
+      .map((item) => {
+        const name = normalize(
+          item.querySelector(".t-bold span[aria-hidden='true']")?.textContent ??
+            "",
+        );
+        if (!name) return null;
+
+        const detailLines = Array.from(
+          item.querySelectorAll("span.t-14.t-normal span[aria-hidden='true']"),
+        )
+          .map((el) => normalize(el.textContent ?? ""))
+          .filter(Boolean);
+
+        let role = "";
+        let startDate = "";
+        let endDate = "";
+        for (const line of detailLines) {
+          if (!line || line === name) continue;
+          if (!startDate && /\d{4}/.test(line)) {
+            const parsed = parseDateRange(line);
+            if (parsed.startDate || parsed.endDate) {
+              startDate = parsed.startDate;
+              endDate = parsed.endDate;
+              continue;
+            }
+          }
+          if (!role && !line.toLowerCase().includes("associated with")) {
+            role = line;
+          }
+        }
+
+        const descriptionBlocks = Array.from(
+          item.querySelectorAll(
+            ".pvs-entity__sub-components .t-14.t-normal.t-black",
+          ),
+        );
+        const blocks =
+          descriptionBlocks.length > 0
+            ? descriptionBlocks
+            : Array.from(item.querySelectorAll("div.t-14.t-normal.t-black"));
+        const chunks = blocks.flatMap((block) => {
+          const hidden = Array.from(
+            block.querySelectorAll("span.visually-hidden"),
+          )
+            .map((el) =>
+              ((el as HTMLElement).innerText || el.textContent || "").trim(),
+            )
+            .filter(Boolean);
+          if (hidden.length > 0) return hidden;
+          const visible =
+            (block as HTMLElement).innerText || block.textContent || "";
+          return visible ? [visible.trim()] : [];
+        });
+        const uniqueChunks = Array.from(
+          new Set(chunks.map((value) => value.trim()).filter(Boolean)),
+        );
+        const description = uniqueChunks.join("\n");
+
+        const url =
+          Array.from(item.querySelectorAll<HTMLAnchorElement>("a"))
+            .map((anchor) => anchor.href)
+            .find(
+              (href) =>
+                href &&
+                href.startsWith("http") &&
+                !href.includes("linkedin.com"),
+            ) ?? "";
+
+        return {
+          id: item.id || undefined,
+          name,
+          role,
+          description,
+          startDate,
+          endDate,
+          url,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    const seen = new Set<string>();
+    return rows.filter((item) => {
+      const key = `${item.name}|${item.role}|${item.startDate}|${item.endDate}`
+        .toLowerCase()
+        .trim();
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
+};
+
+const extractCertificationDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const scope =
+      document.querySelector("main .scaffold-finite-scroll__content") ??
+      document.querySelector("main") ??
+      document;
+    const items = Array.from(
+      scope.querySelectorAll(
+        'li[id*="CERTIFICATION"], li[id*="CERTIFICATIONS"], li[id*="LICENSE"]',
+      ),
+    );
+    const nodes =
+      items.length > 0
+        ? items
+        : Array.from(scope.querySelectorAll("li.pvs-list__paged-list-item"));
+
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+
+    function extractDateLine(lines: string[], keyword: string) {
+      const found = lines.find((line) => line.toLowerCase().includes(keyword));
+      if (!found) return "";
+      return found.replace(new RegExp(`${keyword}\\s*`, "i"), "").trim();
+    }
+
+    const rows = nodes
+      .map((item) => {
+        const name = normalize(
+          item.querySelector(".t-bold span[aria-hidden='true']")?.textContent ??
+            "",
+        );
+        if (!name) return null;
+
+        const detailLines = Array.from(
+          item.querySelectorAll("span.t-14.t-normal span[aria-hidden='true']"),
+        )
+          .map((el) => normalize(el.textContent ?? ""))
+          .filter(Boolean);
+
+        const issueDate =
+          extractDateLine(detailLines, "issued") ||
+          extractDateLine(detailLines, "issue") ||
+          "";
+        const expirationDate =
+          extractDateLine(detailLines, "expires") ||
+          extractDateLine(detailLines, "expiration") ||
+          "";
+
+        let issuer = "";
+        for (const line of detailLines) {
+          const lower = line.toLowerCase();
+          if (line === name) continue;
+          if (lower.includes("issued")) continue;
+          if (lower.includes("expires") || lower.includes("expiration"))
+            continue;
+          if (lower.includes("credential")) continue;
+          issuer = line;
+          break;
+        }
+
+        const rawText = normalize(item.textContent ?? "");
+        const credentialIdMatch = /credential id[:\s]*([a-z0-9-]+)/i.exec(
+          rawText,
+        );
+        const credentialId = credentialIdMatch?.[1] ?? "";
+
+        const credentialUrl =
+          Array.from(item.querySelectorAll<HTMLAnchorElement>("a"))
+            .map((anchor) => anchor.href)
+            .find(
+              (href) =>
+                href &&
+                href.startsWith("http") &&
+                !href.includes("linkedin.com"),
+            ) ?? "";
+
+        return {
+          id: item.id || undefined,
+          name,
+          issuer,
+          issueDate,
+          expirationDate,
+          credentialId,
+          credentialUrl,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    const seen = new Set<string>();
+    return rows.filter((item) => {
+      const key = `${item.name}|${item.issuer}|${item.issueDate}`
+        .toLowerCase()
+        .trim();
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
+};
+
+const extractHonorDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const scope =
+      document.querySelector("main .scaffold-finite-scroll__content") ??
+      document.querySelector("main") ??
+      document;
+    const items = Array.from(
+      scope.querySelectorAll('li[id*="HONOR"], li[id*="AWARD"]'),
+    );
+    const nodes =
+      items.length > 0
+        ? items
+        : Array.from(scope.querySelectorAll("li.pvs-list__paged-list-item"));
+
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+
+    const rows = nodes
+      .map((item) => {
+        const title = normalize(
+          item.querySelector(".t-bold span[aria-hidden='true']")?.textContent ??
+            "",
+        );
+        if (!title) return null;
+
+        const detailLines = Array.from(
+          item.querySelectorAll("span.t-14.t-normal span[aria-hidden='true']"),
+        )
+          .map((el) => normalize(el.textContent ?? ""))
+          .filter(Boolean);
+
+        let issuer = "";
+        let date = "";
+        for (const line of detailLines) {
+          if (line === title) continue;
+          if (!issuer && !/\d{4}/.test(line)) {
+            issuer = line;
+            continue;
+          }
+          if (!date && /\d{4}/.test(line)) {
+            date = line;
+          }
+        }
+
+        const descriptionBlocks = Array.from(
+          item.querySelectorAll(
+            ".pvs-entity__sub-components .t-14.t-normal.t-black, div.t-14.t-normal.t-black",
+          ),
+        );
+        const description = descriptionBlocks
+          .map((block) => {
+            const hidden = Array.from(
+              block.querySelectorAll("span.visually-hidden"),
+            )
+              .map((el) =>
+                ((el as HTMLElement).innerText || el.textContent || "").trim(),
+              )
+              .filter(Boolean);
+            if (hidden.length > 0) return hidden.join("\n");
+            return (
+              (block as HTMLElement).innerText ||
+              block.textContent ||
+              ""
+            ).trim();
+          })
+          .filter(Boolean)
+          .join("\n");
+
+        return {
+          id: item.id || undefined,
+          title,
+          issuer,
+          date,
+          description,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    const seen = new Set<string>();
+    return rows.filter((item) => {
+      const key = `${item.title}|${item.issuer}|${item.date}`
+        .toLowerCase()
+        .trim();
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
+};
+
+const extractVolunteerDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const scope =
+      document.querySelector("main .scaffold-finite-scroll__content") ??
+      document.querySelector("main") ??
+      document;
+    const items = Array.from(scope.querySelectorAll('li[id*="VOLUNTEER"]'));
+    const nodes =
+      items.length > 0
+        ? items
+        : Array.from(scope.querySelectorAll("li.pvs-list__paged-list-item"));
+
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+
+    function parseDateRange(value: string) {
+      const match =
+        /(\b[A-Za-z]{3,9}\s+\d{4})\s*(?:-|to)\s*(Present|[A-Za-z]{3,9}\s+\d{4})/i.exec(
+          value,
+        );
+      if (!match) return { startDate: "", endDate: "" };
+      return { startDate: match[1] ?? "", endDate: match[2] ?? "" };
+    }
+
+    const rows = nodes
+      .map((item) => {
+        const role = normalize(
+          item.querySelector(".t-bold span[aria-hidden='true']")?.textContent ??
+            "",
+        );
+        if (!role) return null;
+
+        const organizationLine = normalize(
+          item.querySelector("span.t-14.t-normal span[aria-hidden='true']")
+            ?.textContent ?? "",
+        );
+        const organization = organizationLine.split("·")[0]?.trim() ?? "";
+
+        const dateLine = normalize(
+          item.querySelector(".pvs-entity__caption-wrapper")?.textContent ?? "",
+        );
+        const { startDate, endDate } = parseDateRange(dateLine);
+
+        const detailLines = Array.from(
+          item.querySelectorAll("span.t-14.t-normal span[aria-hidden='true']"),
+        )
+          .map((el) => normalize(el.textContent ?? ""))
+          .filter(Boolean);
+        let cause = "";
+        for (const line of detailLines) {
+          if (line === role || line === organizationLine) continue;
+          if (/\d{4}/.test(line)) continue;
+          if (!cause) {
+            cause = line;
+            break;
+          }
+        }
+
+        const descriptionBlocks = Array.from(
+          item.querySelectorAll(
+            ".pvs-entity__sub-components .t-14.t-normal.t-black, div.t-14.t-normal.t-black",
+          ),
+        );
+        const summary = descriptionBlocks
+          .map((block) => {
+            const hidden = Array.from(
+              block.querySelectorAll("span.visually-hidden"),
+            )
+              .map((el) =>
+                ((el as HTMLElement).innerText || el.textContent || "").trim(),
+              )
+              .filter(Boolean);
+            if (hidden.length > 0) return hidden.join("\n");
+            return (
+              (block as HTMLElement).innerText ||
+              block.textContent ||
+              ""
+            ).trim();
+          })
+          .filter(Boolean)
+          .join("\n");
+
+        return {
+          id: item.id || undefined,
+          role,
+          organization,
+          cause,
+          startDate,
+          endDate,
+          summary,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    const seen = new Set<string>();
+    return rows.filter((item) => {
+      const key =
+        `${item.role}|${item.organization}|${item.startDate}|${item.endDate}`
+          .toLowerCase()
+          .trim();
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
+};
+
+const extractServiceDetails = async (page: {
+  evaluate: <T>(fn: () => T) => Promise<T>;
+}) => {
+  return page.evaluate(() => {
+    const scope =
+      document.querySelector("main .scaffold-finite-scroll__content") ??
+      document.querySelector("main") ??
+      document;
+    const items = Array.from(scope.querySelectorAll('li[id*="SERVICE"]'));
+    const nodes =
+      items.length > 0
+        ? items
+        : Array.from(scope.querySelectorAll("li.pvs-list__paged-list-item"));
+
+    function normalize(value: string) {
+      return value.replace(/\s+/g, " ").trim();
+    }
+
+    const rows = nodes
+      .map((item) => {
+        const name = normalize(
+          item.querySelector(".t-bold span[aria-hidden='true']")?.textContent ??
+            "",
+        );
+        if (!name) return null;
+
+        const descriptionBlocks = Array.from(
+          item.querySelectorAll(
+            ".pvs-entity__sub-components .t-14.t-normal.t-black, div.t-14.t-normal.t-black",
+          ),
+        );
+        const description = descriptionBlocks
+          .map((block) => {
+            const hidden = Array.from(
+              block.querySelectorAll("span.visually-hidden"),
+            )
+              .map((el) =>
+                ((el as HTMLElement).innerText || el.textContent || "").trim(),
+              )
+              .filter(Boolean);
+            if (hidden.length > 0) return hidden.join("\n");
+            return (
+              (block as HTMLElement).innerText ||
+              block.textContent ||
+              ""
+            ).trim();
+          })
+          .filter(Boolean)
+          .join("\n");
+
+        return {
+          id: item.id || undefined,
+          name,
+          description,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    const seen = new Set<string>();
+    return rows.filter((item) => {
+      const key = `${item.name}`.toLowerCase().trim();
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   });
 };
 
@@ -414,7 +910,9 @@ const expandSkillsList = async (page: {
       for (const element of clickable) {
         const text = element.innerText?.toLowerCase() ?? "";
         const aria = element.getAttribute("aria-label")?.toLowerCase() ?? "";
-        if (labels.some((label) => text.includes(label) || aria.includes(label))) {
+        if (
+          labels.some((label) => text.includes(label) || aria.includes(label))
+        ) {
           element.click();
           return true;
         }
@@ -430,8 +928,11 @@ const safeGoto = async (
   page: {
     goto: (
       url: string,
-      options: { waitUntil: "load" | "domcontentloaded" | "networkidle"; timeout: number },
-    ) => Promise<void>;
+      options: {
+        waitUntil: "load" | "domcontentloaded" | "networkidle";
+        timeout: number;
+      },
+    ) => Promise<import("playwright").Response | null>;
     waitForTimeout: (ms: number) => Promise<void>;
   },
   url: string,
@@ -457,6 +958,11 @@ const buildDetailsUrls = (url: string) => {
     return [
       `${parsed.origin}${basePath}/details/experience/`,
       `${parsed.origin}${basePath}/details/education/`,
+      `${parsed.origin}${basePath}/details/projects/`,
+      `${parsed.origin}${basePath}/details/certifications/`,
+      `${parsed.origin}${basePath}/details/honors/`,
+      `${parsed.origin}${basePath}/details/volunteering/`,
+      `${parsed.origin}${basePath}/details/services/`,
       `${parsed.origin}${basePath}/details/skills/`,
       `${parsed.origin}${basePath}/details/recommendations/`,
     ];
@@ -483,6 +989,11 @@ const scrapeDetails = async ({
   const detailData: {
     experiences?: Awaited<ReturnType<typeof extractExperienceDetails>>;
     education?: Awaited<ReturnType<typeof extractEducationDetails>>;
+    projects?: Awaited<ReturnType<typeof extractProjectDetails>>;
+    certifications?: Awaited<ReturnType<typeof extractCertificationDetails>>;
+    honors?: Awaited<ReturnType<typeof extractHonorDetails>>;
+    volunteering?: Awaited<ReturnType<typeof extractVolunteerDetails>>;
+    services?: Awaited<ReturnType<typeof extractServiceDetails>>;
     skills?: Awaited<ReturnType<typeof extractSkillItems>>;
     recommendations?: Awaited<ReturnType<typeof extractRecommendationsDetails>>;
   } = {};
@@ -504,7 +1015,7 @@ const scrapeDetails = async ({
         page.content(),
         page.evaluate(() => {
           const main = document.querySelector("main");
-          return (main?.innerText || document.body.innerText || "").trim();
+          return (main?.innerText ?? document.body.innerText ?? "").trim();
         }),
       ]);
       if (isAuthWall(html, text)) {
@@ -526,13 +1037,41 @@ const scrapeDetails = async ({
           detailData.education = education;
         }
       }
+      if (label === "projects") {
+        const projects = await extractProjectDetails(page);
+        if (projects.length > 0) {
+          detailData.projects = projects;
+        }
+      }
+      if (label === "certifications") {
+        const certifications = await extractCertificationDetails(page);
+        if (certifications.length > 0) {
+          detailData.certifications = certifications;
+        }
+      }
+      if (label === "honors") {
+        const honors = await extractHonorDetails(page);
+        if (honors.length > 0) {
+          detailData.honors = honors;
+        }
+      }
+      if (label === "volunteering") {
+        const volunteering = await extractVolunteerDetails(page);
+        if (volunteering.length > 0) {
+          detailData.volunteering = volunteering;
+        }
+      }
+      if (label === "services") {
+        const services = await extractServiceDetails(page);
+        if (services.length > 0) {
+          detailData.services = services;
+        }
+      }
       if (label === "skills") {
         const skills = await extractSkillItems(page);
         if (skills.length > 0) {
           detailData.skills = skills;
-          sections.push(
-            `SKILLS_ENDORSEMENTS_JSON\n${JSON.stringify(skills)}`,
-          );
+          sections.push(`SKILLS_ENDORSEMENTS_JSON\n${JSON.stringify(skills)}`);
         }
       }
       if (label === "recommendations") {
@@ -560,8 +1099,12 @@ const parseProxy = (proxy?: string) => {
   try {
     const parsed = new URL(normalized);
     const server = `${parsed.protocol}//${parsed.host}`;
-    const username = parsed.username ? decodeURIComponent(parsed.username) : undefined;
-    const password = parsed.password ? decodeURIComponent(parsed.password) : undefined;
+    const username = parsed.username
+      ? decodeURIComponent(parsed.username)
+      : undefined;
+    const password = parsed.password
+      ? decodeURIComponent(parsed.password)
+      : undefined;
     return { server, username, password };
   } catch {
     return { server: normalized };
@@ -615,7 +1158,11 @@ export const scrapeLinkedIn = async ({
   try {
     const storageState = await loadStorageState();
     const context = await browser.newContext({
-      ...(storageState ? { storageState } : {}),
+      ...(storageState
+        ? {
+            storageState: storageState as BrowserContextOptions["storageState"],
+          }
+        : {}),
       userAgent: options.userAgent ?? DEFAULT_USER_AGENT,
       locale: options.locale ?? "en-US",
       viewport: { width: 1280, height: 720 },

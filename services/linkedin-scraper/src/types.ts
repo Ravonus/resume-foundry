@@ -49,6 +49,45 @@ export type ScrapeResult = {
         endDate?: string;
         notes?: string;
       }>;
+      projects?: Array<{
+        id?: string;
+        name?: string;
+        role?: string;
+        description?: string;
+        startDate?: string;
+        endDate?: string;
+        url?: string;
+      }>;
+      certifications?: Array<{
+        id?: string;
+        name?: string;
+        issuer?: string;
+        issueDate?: string;
+        expirationDate?: string;
+        credentialId?: string;
+        credentialUrl?: string;
+      }>;
+      honors?: Array<{
+        id?: string;
+        title?: string;
+        issuer?: string;
+        date?: string;
+        description?: string;
+      }>;
+      volunteering?: Array<{
+        id?: string;
+        role?: string;
+        organization?: string;
+        cause?: string;
+        startDate?: string;
+        endDate?: string;
+        summary?: string;
+      }>;
+      services?: Array<{
+        id?: string;
+        name?: string;
+        description?: string;
+      }>;
       skills?: Array<{
         name: string;
         endorsements?: number;

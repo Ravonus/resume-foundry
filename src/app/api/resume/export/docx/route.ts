@@ -25,19 +25,27 @@ export async function POST(request: Request) {
     );
   }
 
-  const draft = direct.success ? direct.data : wrapped.data.draft;
-  const theme =
-    wrapped.success && wrapped.data.theme
-      ? wrapped.data.theme
-      : await resolveResumeTheme(draft);
+  let draft: z.infer<typeof resumeDraftSchema>;
+  let theme: z.infer<typeof resumeThemeSchema>;
+  if (direct.success) {
+    draft = direct.data;
+    theme = await resolveResumeTheme(draft);
+  } else if (wrapped.success) {
+    draft = wrapped.data.draft;
+    theme = wrapped.data.theme ?? (await resolveResumeTheme(draft));
+  } else {
+    return NextResponse.json(
+      { error: "Invalid resume data." },
+      { status: 400 },
+    );
+  }
 
   const docxBuffer = await buildResumeDocx(draft, theme);
   const safeName =
-    draft.profile.fullName?.trim().replace(/[^a-z0-9]+/gi, "_") ||
-    "resume";
+    draft.profile.fullName?.trim().replace(/[^a-z0-9]+/gi, "_") || "resume";
   const filename = `${safeName}.docx`;
 
-  return new NextResponse(docxBuffer, {
+  return new NextResponse(new Uint8Array(docxBuffer), {
     status: 200,
     headers: {
       "Content-Type":

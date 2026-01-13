@@ -27,6 +27,50 @@ export const resumeLinkSchema = z.object({
   url: z.string(),
 });
 
+export const resumeProjectSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  role: z.string().optional(),
+  description: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  url: z.string().optional(),
+});
+
+export const resumeServiceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+});
+
+export const resumeCertificationSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  issuer: z.string().optional(),
+  issueDate: z.string().optional(),
+  expirationDate: z.string().optional(),
+  credentialId: z.string().optional(),
+  credentialUrl: z.string().optional(),
+});
+
+export const resumeHonorSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  issuer: z.string().optional(),
+  date: z.string().optional(),
+  description: z.string().optional(),
+});
+
+export const resumeVolunteerSchema = z.object({
+  id: z.string(),
+  role: z.string(),
+  organization: z.string().optional(),
+  cause: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  summary: z.string().optional(),
+});
+
 export const resumeProfileSchema = z.object({
   fullName: z.string(),
   headline: z.string().optional(),
@@ -38,6 +82,7 @@ export const resumeProfileSchema = z.object({
   location: z.string().optional(),
   website: z.string().optional(),
   summary: z.string().optional(),
+  headshotUrl: z.string().optional(),
 });
 
 export const resumeDraftSchema = z.object({
@@ -45,6 +90,11 @@ export const resumeDraftSchema = z.object({
   skills: z.array(z.string()),
   experiences: z.array(resumeExperienceSchema),
   education: z.array(resumeEducationSchema),
+  projects: z.array(resumeProjectSchema),
+  certifications: z.array(resumeCertificationSchema),
+  honors: z.array(resumeHonorSchema),
+  volunteering: z.array(resumeVolunteerSchema),
+  services: z.array(resumeServiceSchema),
   links: z.array(resumeLinkSchema),
 });
 
@@ -53,6 +103,11 @@ export const scrapedProfileSchema = z.object({
   skills: z.array(z.string()).optional(),
   experiences: z.array(resumeExperienceSchema).optional(),
   education: z.array(resumeEducationSchema).optional(),
+  projects: z.array(resumeProjectSchema).optional(),
+  certifications: z.array(resumeCertificationSchema).optional(),
+  honors: z.array(resumeHonorSchema).optional(),
+  volunteering: z.array(resumeVolunteerSchema).optional(),
+  services: z.array(resumeServiceSchema).optional(),
   links: z.array(resumeLinkSchema).optional(),
 });
 
@@ -85,6 +140,7 @@ export const createEmptyDraft = (): ResumeDraft => ({
     location: "",
     website: "",
     summary: "",
+    headshotUrl: "",
   },
   skills: [],
   experiences: [
@@ -110,6 +166,55 @@ export const createEmptyDraft = (): ResumeDraft => ({
       notes: "",
     },
   ],
+  projects: [
+    {
+      id: createId(),
+      name: "",
+      role: "",
+      description: "",
+      startDate: "",
+      endDate: "",
+      url: "",
+    },
+  ],
+  certifications: [
+    {
+      id: createId(),
+      name: "",
+      issuer: "",
+      issueDate: "",
+      expirationDate: "",
+      credentialId: "",
+      credentialUrl: "",
+    },
+  ],
+  honors: [
+    {
+      id: createId(),
+      title: "",
+      issuer: "",
+      date: "",
+      description: "",
+    },
+  ],
+  volunteering: [
+    {
+      id: createId(),
+      role: "",
+      organization: "",
+      cause: "",
+      startDate: "",
+      endDate: "",
+      summary: "",
+    },
+  ],
+  services: [
+    {
+      id: createId(),
+      name: "",
+      description: "",
+    },
+  ],
   links: [
     {
       id: createId(),
@@ -127,11 +232,9 @@ export const applyScrapedProfile = (
 
   const profile = { ...draft.profile };
   for (const [key, value] of Object.entries(scraped.profile ?? {})) {
-    if (!value) continue;
+    if (typeof value !== "string" || !value.trim()) continue;
     const field = key as keyof ResumeDraft["profile"];
-    if (!profile[field]) {
-      profile[field] = value as string;
-    }
+    profile[field] ??= value;
   }
 
   return {
@@ -146,6 +249,26 @@ export const applyScrapedProfile = (
       draft.education.some((item) => item.school)
         ? draft.education
         : (scraped.education ?? draft.education),
+    projects:
+      draft.projects.some((item) => item.name)
+        ? draft.projects
+        : (scraped.projects ?? draft.projects),
+    certifications:
+      draft.certifications.some((item) => item.name)
+        ? draft.certifications
+        : (scraped.certifications ?? draft.certifications),
+    honors:
+      draft.honors.some((item) => item.title)
+        ? draft.honors
+        : (scraped.honors ?? draft.honors),
+    volunteering:
+      draft.volunteering.some((item) => item.role || item.organization)
+        ? draft.volunteering
+        : (scraped.volunteering ?? draft.volunteering),
+    services:
+      draft.services.some((item) => item.name)
+        ? draft.services
+        : (scraped.services ?? draft.services),
     links:
       draft.links.some((item) => item.url)
         ? draft.links

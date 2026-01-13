@@ -31,6 +31,18 @@ export const env = createEnv({
     LINKEDIN_SCRAPER_API_KEY: z.string().optional(),
     LINKEDIN_SCRAPER_TIMEOUT_MS: z.coerce.number().optional(),
     LINKEDIN_EXTRACT_MULTI: z.string().optional(),
+    SITE_GENERATOR_JOBS_URL: z.string().url().optional(),
+    SITE_GENERATOR_TEMPLATE_PATH: z.string().optional(),
+    SITE_GENERATOR_RESUME_MARKDOWN_PATH: z.string().optional(),
+    SITE_GENERATOR_PROMPT: z.string().optional(),
+    SITE_GENERATOR_ADMIN_BASE_URL: z.string().url().optional(),
+    SITE_GENERATOR_ORGANIZATION_ID: z.string().optional(),
+    SITE_GENERATOR_DOMAIN_BASE: z.string().optional(),
+    SITE_GENERATOR_REPO_PROVIDER: z.string().optional(),
+    SITE_GENERATOR_GITEA_BASE_URL: z.string().url().optional(),
+    SITE_GENERATOR_DEFAULT_BRANCH: z.string().optional(),
+    SITE_GENERATOR_BUILD_COMMAND: z.string().optional(),
+    SITE_GENERATOR_DEPLOY_MODE: z.string().optional(),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
@@ -42,7 +54,7 @@ export const env = createEnv({
    * `NEXT_PUBLIC_`.
    */
   client: {
-    // NEXT_PUBLIC_CLIENTVAR: z.string(),
+    NEXT_PUBLIC_SITE_DOMAIN_BASE: z.string().optional(),
   },
 
   /**
@@ -72,6 +84,20 @@ export const env = createEnv({
     LINKEDIN_SCRAPER_API_KEY: process.env.LINKEDIN_SCRAPER_API_KEY,
     LINKEDIN_SCRAPER_TIMEOUT_MS: process.env.LINKEDIN_SCRAPER_TIMEOUT_MS,
     LINKEDIN_EXTRACT_MULTI: process.env.LINKEDIN_EXTRACT_MULTI,
+    SITE_GENERATOR_JOBS_URL: process.env.SITE_GENERATOR_JOBS_URL,
+    SITE_GENERATOR_TEMPLATE_PATH: process.env.SITE_GENERATOR_TEMPLATE_PATH,
+    SITE_GENERATOR_RESUME_MARKDOWN_PATH:
+      process.env.SITE_GENERATOR_RESUME_MARKDOWN_PATH,
+    SITE_GENERATOR_PROMPT: process.env.SITE_GENERATOR_PROMPT,
+    SITE_GENERATOR_ADMIN_BASE_URL: process.env.SITE_GENERATOR_ADMIN_BASE_URL,
+    SITE_GENERATOR_ORGANIZATION_ID: process.env.SITE_GENERATOR_ORGANIZATION_ID,
+    SITE_GENERATOR_DOMAIN_BASE: process.env.SITE_GENERATOR_DOMAIN_BASE,
+    SITE_GENERATOR_REPO_PROVIDER: process.env.SITE_GENERATOR_REPO_PROVIDER,
+    SITE_GENERATOR_GITEA_BASE_URL: process.env.SITE_GENERATOR_GITEA_BASE_URL,
+    SITE_GENERATOR_DEFAULT_BRANCH: process.env.SITE_GENERATOR_DEFAULT_BRANCH,
+    SITE_GENERATOR_BUILD_COMMAND: process.env.SITE_GENERATOR_BUILD_COMMAND,
+    SITE_GENERATOR_DEPLOY_MODE: process.env.SITE_GENERATOR_DEPLOY_MODE,
+    NEXT_PUBLIC_SITE_DOMAIN_BASE: process.env.NEXT_PUBLIC_SITE_DOMAIN_BASE,
     NODE_ENV: process.env.NODE_ENV,
   },
   /**
