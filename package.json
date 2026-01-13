@@ -34,6 +34,7 @@
     "mammoth": "^1.6.0",
     "next": "^15.2.3",
     "pdf-parse": "^1.1.1",
+    "playwright": "^1.57.0",
     "postgres": "^3.4.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
