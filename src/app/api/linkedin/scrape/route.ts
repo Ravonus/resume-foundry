@@ -21,6 +21,8 @@ const scrapeJobSchema = z.object({
 const scraperBaseUrl = () =>
   env.LINKEDIN_SCRAPER_URL ?? "http://localhost:5150";
 
+console.log("LINKEDIN_SCRAPER_URL:", scraperBaseUrl());
+
 const buildScraperRequest = (url: string) => ({
   url,
   options: {
@@ -36,7 +38,7 @@ export type ScrapeJobInfo = z.infer<typeof scrapeJobSchema>;
 
 const queueLinkedInScrape = async (url: string): Promise<ScrapeJobInfo> => {
   const controller = new AbortController();
-  const timeoutMs = env.LINKEDIN_SCRAPER_TIMEOUT_MS ?? 20000;
+  const timeoutMs = env.LINKEDIN_SCRAPER_TIMEOUT_MS ?? 50000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
