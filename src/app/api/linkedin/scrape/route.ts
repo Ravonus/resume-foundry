@@ -56,6 +56,10 @@ const queueLinkedInScrape = async (url: string): Promise<ScrapeJobInfo> => {
 
     const payload = (await response.json().catch(() => null)) as unknown;
     if (!response.ok) {
+      console.error("LinkedIn scraper error:", {
+        status: response.status,
+        payload,
+      });
       const message =
         payload && typeof payload === "object" && "error" in payload
           ? String((payload as { error?: string }).error)
@@ -65,6 +69,7 @@ const queueLinkedInScrape = async (url: string): Promise<ScrapeJobInfo> => {
 
     const parsed = scrapeJobSchema.safeParse(payload);
     if (!parsed.success) {
+      console.error("LinkedIn scraper invalid response:", { payload });
       throw new Error("Scraper returned an unexpected payload.");
     }
 
