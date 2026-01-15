@@ -111,11 +111,23 @@ export async function POST(request: Request) {
   let docxBuffer: Buffer;
   let pdfBuffer: Buffer;
   try {
+    console.log("Generating resume exports...");
     const theme =
       parsed.data.theme ?? (await resolveResumeTheme(parsed.data.draft));
+    //get size
+    console.log("Generating DOCX...", theme);
     docxBuffer = await buildResumeDocx(parsed.data.draft, theme);
-    pdfBuffer = await buildResumePdf(parsed.data.draft, theme);
+
+    const pdfResult = (await buildResumePdf(parsed.data.draft, theme)) as
+      | Buffer
+      | Error;
+    if (pdfResult instanceof Error) {
+      throw pdfResult;
+    }
+    console.log("Generating PDF...", docxBuffer.length);
+    pdfBuffer = pdfResult;
   } catch (error) {
+    console.error("Resume export generation error:", error);
     const message =
       error instanceof Error
         ? error.message
