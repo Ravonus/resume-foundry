@@ -9,9 +9,9 @@ export const buildResumePdf = async (
   draft: ResumeDraft,
   theme: ResumeTheme,
 ) => {
-  const document = buildResumePdfDocument(
+  const document: ReactElement<DocumentProps> = buildResumePdfDocument(
     draft,
     theme,
-  ) as ReactElement<DocumentProps>;
+  );
   return renderToBuffer(document);
 };
