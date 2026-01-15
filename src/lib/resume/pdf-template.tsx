@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type DocumentProps,
 } from "@react-pdf/renderer";
 import { type ReactElement } from "react";
 
@@ -124,7 +125,7 @@ const createPdfStyles = (theme: SafeTheme) =>
       fontSize: 28,
       color: theme.accent,
       marginBottom: 4,
-      fontFamily: "Times-Bold",
+      fontWeight: "bold",
     },
     headline: {
       fontSize: 13.5,
@@ -147,12 +148,12 @@ const createPdfStyles = (theme: SafeTheme) =>
       borderBottomColor: theme.accent,
       paddingBottom: 4,
       marginBottom: 8,
-      fontFamily: "Times-Bold",
+      fontWeight: "bold",
     },
     h3: {
       fontSize: 12,
       marginBottom: 4,
-      fontFamily: "Times-Bold",
+      fontWeight: "bold",
     },
     paragraph: {
       marginBottom: 6,
@@ -187,10 +188,10 @@ const createPdfStyles = (theme: SafeTheme) =>
       textDecoration: "underline",
     },
     bold: {
-      fontFamily: "Times-Bold",
+      fontWeight: "bold",
     },
     italic: {
-      fontFamily: "Times-Italic",
+      fontStyle: "italic",
     },
     code: {
       fontFamily: "Courier",
@@ -315,7 +316,7 @@ const renderPlainList = (
 export const buildResumePdfDocument = (
   draft: ResumeDraft,
   theme: ResumePdfTheme,
-) => {
+): ReactElement<DocumentProps> => {
   const safeTheme = resolveTheme(theme);
   const styles = createPdfStyles(safeTheme);
   const nameValue = draft.profile.fullName?.trim() ?? "";

@@ -78,6 +78,7 @@ const resolveHeadshotBase64 = async (headshotUrl: string) => {
 };
 
 export async function POST(request: Request) {
+  console.log("Site generation request received.");
   const body = (await request.json().catch(() => null)) as unknown;
   const parsed = requestSchema.safeParse(body);
   if (!parsed.success) {
@@ -118,9 +119,7 @@ export async function POST(request: Request) {
     console.log("Generating DOCX...", theme);
     docxBuffer = await buildResumeDocx(parsed.data.draft, theme);
 
-    const pdfResult = (await buildResumePdf(parsed.data.draft, theme)) as
-      | Buffer
-      | Error;
+    const pdfResult = await buildResumePdf(parsed.data.draft, theme);
     if (pdfResult instanceof Error) {
       throw pdfResult;
     }
