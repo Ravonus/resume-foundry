@@ -191,6 +191,7 @@ export async function POST(request: Request) {
       repoProvider,
       giteaBaseUrl,
       repoName: slug,
+      repoUrl: `${giteaBaseUrl}/chad/${slug}`,
       defaultBranch,
       buildCommand,
       deployMode,
