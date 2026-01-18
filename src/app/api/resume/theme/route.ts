@@ -1,3 +1,4 @@
+import "~/server/polyfills";
 import { NextResponse } from "next/server";
 
 import { resumeDraftSchema } from "~/lib/resume/types";

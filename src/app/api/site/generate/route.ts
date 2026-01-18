@@ -1,3 +1,4 @@
+import "~/server/polyfills";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 

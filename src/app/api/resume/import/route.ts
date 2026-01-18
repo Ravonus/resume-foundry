@@ -2,11 +2,10 @@ import "~/server/polyfills";
 import { NextResponse } from "next/server";
 
 import { scrapedProfileSchema } from "~/lib/resume/types";
-import { extractLinkedInProfile } from "~/server/services/linkedin-extractor";
 import { extractTextFromFile } from "~/server/services/linkedin-ocr";
+import { extractResumeProfile } from "~/server/services/resume-import";
 
-const SUPPORTED_HINT =
-  "Use PDF, DOCX, ODT, TXT, MD, or images.";
+const SUPPORTED_HINT = "Use PDF, DOCX, ODT, TXT, MD, or images.";
 
 const isFormDataFile = (value: FormDataEntryValue | null): value is File =>
   typeof value === "object" &&
@@ -35,10 +34,9 @@ export async function POST(request: Request) {
 
   try {
     const rawText = await extractTextFromFile(file);
-    const profile = await extractLinkedInProfile({
-      rawText,
-      url: typeof url === "string" ? url : "linkedin-file",
-    });
+    const source =
+      typeof url === "string" && url.trim() ? url.trim() : file.name || "resume";
+    const profile = await extractResumeProfile({ rawText, source });
     const parsed = scrapedProfileSchema.safeParse(profile);
     if (!parsed.success) {
       return NextResponse.json(

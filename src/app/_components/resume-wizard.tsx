@@ -516,6 +516,55 @@ const buildMarkdownResume = (draft: ResumeDraft) => {
   return lines.join("\n").trim() + "\n";
 };
 
+const normalizeTagMatch = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9+#]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const escapeRegex = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const skillMatchesText = (skill: string, text: string) => {
+  const trimmed = skill.trim();
+  if (!trimmed) return false;
+  if (trimmed.length <= 3 || /[+#]/.test(trimmed)) {
+    const pattern = new RegExp(`\\b${escapeRegex(trimmed)}\\b`, "i");
+    return pattern.test(text);
+  }
+  const normalizedSkill = normalizeTagMatch(trimmed);
+  if (!normalizedSkill) return false;
+  const normalizedText = normalizeTagMatch(text);
+  if (!normalizedText) return false;
+  return normalizedText.includes(normalizedSkill);
+};
+
+const buildAnchorIds = <T,>(
+  items: T[],
+  prefix: string,
+  getLabel: (item: T, index: number) => string,
+) => {
+  const used = new Set<string>();
+  return items.map((item, index) => {
+    const base = slugify(getLabel(item, index));
+    let candidate = base ? `${prefix}-${base}` : `${prefix}-${index + 1}`;
+    let counter = 2;
+    while (used.has(candidate)) {
+      candidate = base
+        ? `${prefix}-${base}-${counter}`
+        : `${prefix}-${index + 1}-${counter}`;
+      counter += 1;
+    }
+    used.add(candidate);
+    return candidate;
+  });
+};
+
+const buildSkillTags = (skills: string[], text: string, limit = 6) =>
+  skills.filter((skill) => skillMatchesText(skill, text)).slice(0, limit);
+
 const buildSitePrompt = ({
   draft,
   steps,
@@ -555,14 +604,28 @@ const buildSitePrompt = ({
     : "";
   const skills = draft.skills
     .map((skill) => skill.trim())
-    .filter(Boolean)
+    .filter((skill) => skill && skill.length <= 40)
     .slice(0, 12);
   const skillsLine = skills.length
     ? `Core skills: ${skills.join(", ")}`
     : "";
 
-  const experienceLines = draft.experiences
-    .filter((item) => item.title || item.company)
+  const experienceItems = draft.experiences.filter(
+    (item) => item.title || item.company,
+  );
+  const projectItems = draft.projects.filter((item) => item.name);
+  const experienceAnchors = buildAnchorIds(
+    experienceItems,
+    "exp",
+    (item) => item.company || item.title || "",
+  );
+  const projectAnchors = buildAnchorIds(
+    projectItems,
+    "proj",
+    (item) => item.name || "",
+  );
+
+  const experienceLines = experienceItems
     .slice(0, 3)
     .map((item) => {
       const title = [item.title, item.company].filter(Boolean).join(" - ");
@@ -594,8 +657,7 @@ const buildSitePrompt = ({
     })
     .filter(Boolean);
 
-  const projectLines = draft.projects
-    .filter((item) => item.name)
+  const projectLines = projectItems
     .slice(0, 2)
     .map((item) => {
       const name = item.name.trim();
@@ -617,6 +679,68 @@ const buildSitePrompt = ({
       return `- ${name}${roleLabel}${detail}`;
     })
     .filter(Boolean);
+
+  const tagSkills = draft.skills
+    .map((skill) => skill.trim())
+    .filter((skill) => skill && skill.length <= 40);
+
+  const anchorHintLines = [
+    ...experienceItems.map((item, index) => {
+      const label = [item.title, item.company].filter(Boolean).join(" - ");
+      if (!label) return "";
+      return `- ${experienceAnchors[index]}: ${label}`;
+    }),
+    ...projectItems.map((item, index) => {
+      const label = item.name?.trim() ?? "";
+      if (!label) return "";
+      return `- ${projectAnchors[index]}: ${label}`;
+    }),
+  ].filter(Boolean);
+
+  const tagHintLines = [
+    ...experienceItems.map((item, index) => {
+      const text = [
+        item.title,
+        item.company,
+        item.summary,
+        ...(item.highlights ?? []),
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const tags = buildSkillTags(tagSkills, text, 8);
+      if (tags.length === 0) return "";
+      return `- ${experienceAnchors[index]} tags: ${tags.join(", ")}`;
+    }),
+    ...projectItems.map((item, index) => {
+      const text = [item.name, item.role, item.description]
+        .filter(Boolean)
+        .join(" ");
+      const tags = buildSkillTags(tagSkills, text, 8);
+      if (tags.length === 0) return "";
+      return `- ${projectAnchors[index]} tags: ${tags.join(", ")}`;
+    }),
+  ].filter(Boolean);
+
+  const skillIndexLines = (() => {
+    const mapping = new Map<string, string>();
+    for (const line of tagHintLines) {
+      const match = /^- ([^ ]+) tags: (.+)$/.exec(line);
+      if (!match) continue;
+      const anchor = match[1] ?? "";
+      const tags = (match[2] ?? "").split(",").map((tag) => tag.trim());
+      for (const tag of tags) {
+        if (!tag || mapping.has(tag)) continue;
+        mapping.set(tag, anchor);
+      }
+    }
+    return skills
+      .map((skill) => {
+        const anchor = mapping.get(skill);
+        return anchor ? `- ${skill} -> #${anchor}` : "";
+      })
+      .filter(Boolean)
+      .slice(0, 12);
+  })();
 
   const dynamicNotes = steps
     .filter((step): step is DynamicStep => step.kind === "dynamic")
@@ -642,11 +766,22 @@ const buildSitePrompt = ({
     "Style: strong typography, high-contrast colors, tasteful motion, and a confident, premium layout.",
     "Goal: convert recruiters/clients with proof blocks, clear impact, and a crisp call-to-action.",
     "Use the resume markdown as the source of truth. Do not invent facts.",
+    "Add anchorId and tags for experience and project items; do not use highlights.",
+    "AnchorId format: exp-<slug> for experience and proj-<slug> for projects.",
+    "Tags must come from core skills and should match the related experience/project text.",
+    anchorHintLines.length ? "AnchorId suggestions:" : "",
+    ...anchorHintLines,
+    tagHintLines.length ? "Tag suggestions:" : "",
+    ...tagHintLines,
+    skillIndexLines.length
+      ? "Skill Index links (skill -> anchor):"
+      : "",
+    ...skillIndexLines,
     focusLine,
     locationLine,
     summary ? `Summary: ${summary}` : "",
     skillsLine,
-    experienceLines.length ? "Experience highlights:" : "",
+    experienceLines.length ? "Experience summary:" : "",
     ...experienceLines,
     projectLines.length ? "Projects:" : "",
     ...projectLines,
@@ -2285,7 +2420,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
 
     setDraft((current) => applyScrapedProfile(current, scraped));
 
-    if (!edenEnabled) return;
+    if (!edenEnabled || importMode === "resume") return;
 
     const scrapedKey = buildScrapedKey(scraped);
     if (
@@ -2385,6 +2520,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
   }, [
     scraped,
     edenEnabled,
+    importMode,
     autoRewriteKey,
   ]);
 
@@ -2970,7 +3106,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
         formData.append("url", linkedinUrl.trim());
       }
 
-      const response = await fetch("/api/linkedin/ocr", {
+      const response = await fetch("/api/resume/import", {
         method: "POST",
         body: formData,
       });

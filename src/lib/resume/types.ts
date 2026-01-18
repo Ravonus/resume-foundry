@@ -234,7 +234,10 @@ export const applyScrapedProfile = (
   for (const [key, value] of Object.entries(scraped.profile ?? {})) {
     if (typeof value !== "string" || !value.trim()) continue;
     const field = key as keyof ResumeDraft["profile"];
-    profile[field] ??= value;
+    const currentValue = profile[field];
+    if (typeof currentValue !== "string" || !currentValue.trim()) {
+      profile[field] = value;
+    }
   }
 
   return {

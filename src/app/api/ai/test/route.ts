@@ -1,4 +1,5 @@
-//just console.log get
+//just console.log getimport "~/server/polyfills";
+
 
 import { NextResponse } from "next/server";
 

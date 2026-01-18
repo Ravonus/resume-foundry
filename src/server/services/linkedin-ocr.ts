@@ -48,9 +48,48 @@ const extractTextFromOdt = async (buffer: Buffer) => {
   return decodeXmlEntities(normalized);
 };
 
+const extractTextFromDocxXml = (xml: string) => {
+  if (!xml) return "";
+  const withBreaks = xml
+    .replace(/<w:tab[^/>]*\/>/gi, "\t")
+    .replace(/<w:br[^/>]*\/>/gi, "\n")
+    .replace(/<w:cr[^/>]*\/>/gi, "\n")
+    .replace(/<\/w:p>/gi, "\n")
+    .replace(/<\/w:tr>/gi, "\n");
+  const stripped = withBreaks.replace(/<[^>]+>/g, " ");
+  const normalized = stripped
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  return decodeXmlEntities(normalized);
+};
+
 const extractTextFromDocx = async (buffer: Buffer) => {
   const result = await mammoth.extractRawText({ buffer });
-  return (result.value ?? "").trim();
+  const mammothText = (result.value ?? "").trim();
+
+  let zipText = "";
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const xmlFiles = Object.keys(zip.files).filter((name) =>
+      name.startsWith("word/") &&
+      (name === "word/document.xml" ||
+        name.startsWith("word/header") ||
+        name.startsWith("word/footer")),
+    );
+    const xmlPromises = xmlFiles
+      .map((name) => zip.file(name)?.async("text"))
+      .filter((value): value is Promise<string> => Boolean(value));
+    const xmlContents = await Promise.all(xmlPromises);
+    const combinedXml = xmlContents.filter(Boolean).join("\n");
+    zipText = extractTextFromDocxXml(combinedXml);
+  } catch {
+    zipText = "";
+  }
+
+  const combined = [zipText, mammothText].filter(Boolean).join("\n").trim();
+  return combined;
 };
 
 const extractTextFromPdf = async (buffer: Buffer) => {
