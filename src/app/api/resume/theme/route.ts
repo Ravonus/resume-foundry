@@ -10,6 +10,7 @@ import {
 const themeRequestSchema = resumeDraftSchema;
 
 export async function POST(request: Request) {
+  console.log("Received theme request");
   const body = (await request.json().catch(() => null)) as unknown;
   console.log("Received theme request body:", body);
   const parsed = themeRequestSchema.safeParse(body);
