@@ -3106,6 +3106,7 @@ export function ResumeWizard({ edenEnabled = false }: ResumeWizardProps) {
         formData.append("url", linkedinUrl.trim());
       }
 
+      // Let the browser set the multipart boundary for FormData.
       const response = await fetch("/api/resume/import", {
         method: "POST",
         body: formData,
